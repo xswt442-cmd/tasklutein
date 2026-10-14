@@ -124,11 +124,18 @@ In Cloudflare Zero Trust, create a **second, separate Tunnel** with public hostn
 cd ~/apps/tasklutein-preview/deploy
 docker compose --project-name tasklutein-preview -f compose.yml -f compose.mihomo.yml --env-file .env.preview config --quiet
 docker compose --project-name tasklutein-preview -f compose.yml -f compose.mihomo.yml --env-file .env.preview up -d --build db api mcp router
-docker compose --project-name tasklutein-preview -f compose.yml -f compose.mihomo.yml --env-file .env.preview --profile tunnel up -d tunnel
 docker compose --project-name tasklutein-preview -f compose.yml -f compose.mihomo.yml --env-file .env.preview ps
 ```
 
-The Compose project name creates a separate network and a database volume prefixed with `tasklutein-preview_`. Preview PostgreSQL binds only to `127.0.0.1:55433`; it is not exposed publicly. `compose.mihomo.yml` routes only image-build steps through the host's Mihomo proxy; running containers remain on the isolated Compose network. To update Preview, run `git pull --ff-only` in `~/apps/tasklutein-preview`, then run `up -d --build` with the same `-f compose.yml -f compose.mihomo.yml` and project name from its `deploy` directory. Never run these commands from the Production checkout.
+The Preview Tunnel uses a dedicated Compose file and project name, and joins only the Preview app network `tasklutein-preview_default`:
+
+```sh
+docker compose --project-name tasklutein-preview-tunnel -f compose.preview-tunnel.yml --env-file .env.preview config --quiet
+docker compose --project-name tasklutein-preview-tunnel -f compose.preview-tunnel.yml --env-file .env.preview up -d
+docker compose --project-name tasklutein-preview-tunnel -f compose.preview-tunnel.yml --env-file .env.preview ps
+```
+
+The Tunnel container can reach `router:8080` only through the Preview network. It does not depend on or join the Production Compose project/network and does not use Production's `.env`. The app Compose project creates a separate network and a database volume prefixed with `tasklutein-preview_`. Preview PostgreSQL binds only to `127.0.0.1:55433`; it is not exposed publicly. `compose.mihomo.yml` routes only image-build steps through the host's Mihomo proxy; running app containers remain on the isolated Preview network. To update Preview, run `git pull --ff-only` in `~/apps/tasklutein-preview`, then update the app with the `tasklutein-preview` project name. Manage the Tunnel separately using the Preview-only file above. Never run these commands from the Production checkout.
 
 In Cloudflare Dashboard → Workers & Pages → `tasklutein` → Settings → Variables and Secrets → **Previews Base**, add the `ORIGIN_GATEWAY_TOKEN` Secret. Its value must exactly match the Preview `.env.preview` `EDGE_GATEWAY_TOKEN`. Production and Preview tokens must be different. Preview `ORIGIN_URL` is provided by `previews.vars` in `wrangler.jsonc`.
 

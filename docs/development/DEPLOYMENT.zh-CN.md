@@ -124,11 +124,18 @@ Cloudflare Zero Trust 中创建**第二个独立 Tunnel**，公开主机名设�
 cd ~/apps/tasklutein-preview/deploy
 docker compose --project-name tasklutein-preview -f compose.yml -f compose.mihomo.yml --env-file .env.preview config --quiet
 docker compose --project-name tasklutein-preview -f compose.yml -f compose.mihomo.yml --env-file .env.preview up -d --build db api mcp router
-docker compose --project-name tasklutein-preview -f compose.yml -f compose.mihomo.yml --env-file .env.preview --profile tunnel up -d tunnel
 docker compose --project-name tasklutein-preview -f compose.yml -f compose.mihomo.yml --env-file .env.preview ps
 ```
 
-Compose 项目名会创建独立网络和带 `tasklutein-preview_` 前缀的数据卷；Preview 数据库只绑定回环地址 `127.0.0.1:55433`，不对公网开放。`compose.mihomo.yml` 只让镜像构建步骤通过宿主机 Mihomo 代理，运行中的容器仍处在隔离的 Compose 网络。更新预览时只在 `~/apps/tasklutein-preview` 执行 `git pull --ff-only`，再用同一组 `-f compose.yml -f compose.mihomo.yml` 和项目名执行 `up -d --build`；不要在生产目录运行这组命令。
+Preview Tunnel 使用独立 Compose 文件和独立项目名，只加入 Preview 应用创建的 `tasklutein-preview_default` 网络：
+
+```sh
+docker compose --project-name tasklutein-preview-tunnel -f compose.preview-tunnel.yml --env-file .env.preview config --quiet
+docker compose --project-name tasklutein-preview-tunnel -f compose.preview-tunnel.yml --env-file .env.preview up -d
+docker compose --project-name tasklutein-preview-tunnel -f compose.preview-tunnel.yml --env-file .env.preview ps
+```
+
+Tunnel 容器只能通过 Preview 网络访问 `router:8080`，不依赖或加入 Production Compose 项目/网络，也不使用 Production 的 `.env`。Compose 项目名会创建独立网络和带 `tasklutein-preview_` 前缀的数据卷；Preview 数据库只绑定回环地址 `127.0.0.1:55433`，不对公网开放。`compose.mihomo.yml` 只让镜像构建步骤通过宿主机 Mihomo 代理，运行中的应用容器仍处在隔离的 Preview 网络。更新预览时只在 `~/apps/tasklutein-preview` 执行 `git pull --ff-only`，再用 `tasklutein-preview` 项目名更新应用；Tunnel 单独用上面的 Preview 专用文件管理。不要在生产目录运行这些命令。
 
 Cloudflare Dashboard → Workers & Pages → `tasklutein` → Settings → Variables and Secrets → **Previews Base**：添加 Secret `ORIGIN_GATEWAY_TOKEN`，其值必须与 Preview `.env.preview` 的 `EDGE_GATEWAY_TOKEN` 完全相同。Production 和 Preview 两边的 Token 必须不同。Preview `ORIGIN_URL` 已由 `wrangler.jsonc` 的 `previews.vars` 提供。
 
