@@ -1,0 +1,16 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "tasklutein-preview",
+  "main": "./apps/edge/src/index.ts",
+  "compatibility_date": "2026-10-14",
+  "vars": {
+    "ORIGIN_URL": "https://preview.origin-tasklutein.xswt.fyi"
+  },
+  "assets": {
+    "directory": "./apps/web/dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*", "/api", "/mcp", "/mcp/*"]
+  },
+  "observability": { "enabled": true }
+}

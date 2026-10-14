@@ -101,8 +101,48 @@ Remote MCP URL: **`https://tasklutein.<domain>/mcp`**, using HTTP Streamable MCP
 
 Local stdio MCP remains available through `npm run mcp` with `TASKLUTEIN_API_BASE` set to the public Worker site (without `/api`) and `TASKLUTEIN_API_TOKEN` set to the Agent Token. Do not place real credentials in agent prompts or committed MCP configuration.
 
+## Run the `main` Production site and `dev` Preview together
+
+Use two Workers: Production `tasklutein` deploys `main`; Preview `tasklutein-preview` deploys `dev`. The Cloudflare inventory says `preview.tasklutein.xswt.fyi` currently points to the Production Worker, so it cannot be treated as a dev Preview. The existing `wrangler.jsonc` names the Production Worker `tasklutein`; the new `wrangler.preview.jsonc` uses the separate name `tasklutein-preview`. Do not deploy `dev` with the Production config.
+
+Keep the repository's Cloudflare Workers Build production branch `main` and production deploy command unchanged. The Preview build uses `npm ci && npm run build:web` and `npx wrangler deploy --config wrangler.preview.jsonc`, so Preview deploys to the separate `tasklutein-preview` Worker instead of overwriting Production `tasklutein`. First verify the Preview Worker at `tasklutein-preview.<account>.workers.dev`, then deliberately move `preview.tasklutein.xswt.fyi` from the Production Worker to `tasklutein-preview`. Before changing the custom domain, make sure the Preview backend, runtime variable, and Secret are ready, and record the old mapping for rollback.
+
+Keep the Production checkout at `~/apps/tasklutein`; create a separate `dev` checkout and Compose project:
+
+```sh
+git clone --branch dev https://github.com/xswt442-cmd/tasklutein.git ~/apps/tasklutein-preview
+cd ~/apps/tasklutein-preview/deploy
+cp .env.preview.example .env.preview
+chmod 600 .env.preview
+```
+
+Edit `.env.preview` and generate fresh, unique values for `POSTGRES_PASSWORD`, `WEB_ACCESS_TOKEN`, `AGENT_ACCESS_TOKEN`, and `EDGE_GATEWAY_TOKEN`. Do not reuse Production secrets. Keep the separate ports `55433`, `8001`, and `8081`. Set `CF_TUNNEL_TOKEN` only after creating the dedicated Preview origin Tunnel.
+
+In Cloudflare Zero Trust, create a **second, separate Tunnel** with public hostname `preview.origin-tasklutein.xswt.fyi` and service `http://router:8080`. Then start only the Preview stack:
+
+```sh
+cd ~/apps/tasklutein-preview/deploy
+docker compose --project-name tasklutein-preview --env-file .env.preview config --quiet
+docker compose --project-name tasklutein-preview --env-file .env.preview up -d --build db api mcp router
+docker compose --project-name tasklutein-preview --env-file .env.preview --profile tunnel up -d tunnel
+docker compose --project-name tasklutein-preview --env-file .env.preview ps
+```
+
+The Compose project name creates a separate network and a database volume prefixed with `tasklutein-preview_`. Preview PostgreSQL binds only to `127.0.0.1:55433`; it is not exposed publicly. To update Preview, run `git pull --ff-only` in `~/apps/tasklutein-preview`, then run `docker compose --project-name tasklutein-preview --env-file .env.preview up -d --build` from its `deploy` directory. Never run these commands from the Production checkout.
+
+In Cloudflare Dashboard → the corresponding Worker → Settings → Variables and Secrets, configure:
+
+| Environment | `ORIGIN_URL` variable | `ORIGIN_GATEWAY_TOKEN` Secret |
+| --- | --- | --- |
+| Production | `https://origin-tasklutein.xswt.fyi` | Exactly the Production `.env` `EDGE_GATEWAY_TOKEN` |
+| `tasklutein-preview` Production environment | `https://preview.origin-tasklutein.xswt.fyi` | Exactly the Preview `.env.preview` `EDGE_GATEWAY_TOKEN` |
+
+Both Workers use the same variable names, `ORIGIN_URL` and the `ORIGIN_GATEWAY_TOKEN` Secret, but each gets its own environment value. The `ORIGIN_PREVIEW_URL` shown in the earlier screenshot is not read by the Worker; remove it or replace it with `ORIGIN_URL`. Never put the gateway token in a plaintext variable, build variable, or repository. Do not rely on the Production Worker's Preview Base for domain isolation; this plan uses a separate Worker and separate credentials.
+
+Confirm the `tasklutein-preview` Build deploys only from `dev`. After pushing `dev`, verify that both Production `https://tasklutein.xswt.fyi/api/health` and Preview `https://preview.tasklutein.xswt.fyi/api/health` are healthy. A task created in Preview must appear only in Preview; Production data must remain unchanged. Direct requests to either origin hostname's `/api/health` should return 403. Worker, database, and application tokens are independent across environments.
+
 ## Updates, Rollbacks, and Security Checklist
 
-Use `dev` for ongoing development and `main` for production. GitHub Actions `check.yml` runs CI; `release.yml` creates a GitHub Release after an explicitly pushed valid Tag, but **never deploys Worker or SSH-deploys Tencent**. See the maintainer [`RELEASE.md`](../../RELEASE.md) for release order and rollback procedures. Before release, check PR, `npm run check`, backend pytest/Ruff, and real PostgreSQL/MCP integration. Update the server manually with `git pull --ff-only` and `docker compose --env-file .env up -d --build`; deploy Worker via Cloudflare Git integration or `npx wrangler deploy`.
+Use `dev` for ongoing development and Preview, and `main` for production. GitHub Actions `check.yml` runs CI; `release.yml` creates a GitHub Release after an explicitly pushed valid Tag, but **never deploys Worker or SSH-deploys Tencent**. See the maintainer [`RELEASE.md`](../../RELEASE.md) for release order and rollback procedures. Before release, check PR, `npm run check`, backend pytest/Ruff, and real PostgreSQL/MCP integration. Update the Production server manually in its own checkout with `git pull --ff-only` and `docker compose --env-file .env up -d --build`; update Preview separately on `dev` using the `tasklutein-preview` Compose project. Deploy Worker via Cloudflare Git integration or `npx wrangler deploy`.
 
 Back up PostgreSQL before migrations; reverting app code never reverses database schema. Production also needs Cloudflare rate limits/WAF, redacted logs, secret rotation, and alerts. No multi-user accounts, MCP OAuth, automated secret rotation, or production migration orchestration exists yet.
