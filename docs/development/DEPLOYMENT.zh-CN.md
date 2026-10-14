@@ -1,0 +1,108 @@
+# 部署与集成
+
+[English](DEPLOYMENT.en.md) · 简体中文
+
+## 目标拓扑与前提
+
+**Cloudflare Worker** 提供 React 页面、`/api/*` 与 `/mcp` 公网网关。**腾讯云 `tx-z02`** 运行 Docker 下的 FastAPI、PostgreSQL 和远程 MCP Server，Caddy 负责内网路径分流，Cloudflare Tunnel 将 HTTPS 源站请求转给 Caddy。业务数据始终留在腾讯云。
+
+当前只是仓库中的部署配置，**没有自动创建云端资源、部署生产服务或保存真实密钥**。Node.js 24+ 构建 Worker，Ubuntu 服务器需要 Docker Engine + Docker Compose v2。只读检查过 `tx-z02`：Ubuntu 24.04，已有 Docker Engine，但当时缺少 Compose v2 插件；先确认状态再安装。
+
+规划两个不同域名，不能让源站域名也路由到 Worker：
+- **公开应用：** `https://tasklutein.<domain>`（Worker；页面、`/api/*`、`/mcp`）。
+- **Tunnel 源站：** `https://origin-tasklutein.<domain>`（仅供 Worker 回源，强制网关密钥）。
+
+## 第一步：初始化腾讯云 Docker
+
+**不在本指南中自动 SSH 或安装软件**。在 `ssh tx-z02` 登录后，如 `docker compose version` 不存在，由服务器管理员安装：
+
+```sh
+sudo apt-get update
+sudo apt-get install -y docker-compose-v2
+docker compose version
+```
+
+先将经过 CI 验证的代码提交并推送至 `main`，然后部署到服务器：
+
+```sh
+mkdir -p ~/apps
+git clone --branch main https://github.com/xswt442-cmd/tasklutein.git ~/apps/tasklutein
+cd ~/apps/tasklutein/deploy
+cp .env.example .env
+chmod 600 .env
+```
+
+编辑 `deploy/.env`，用 `openssl rand -hex 32` 分别生成 **4 个不同**的 `POSTGRES_PASSWORD`、`WEB_ACCESS_TOKEN`、`AGENT_ACCESS_TOKEN`、`EDGE_GATEWAY_TOKEN`。不要使用示例中的 `REPLACE_WITH_...` 值。可先将 `CF_TUNNEL_TOKEN` 留空。
+
+```sh
+cd ~/apps/tasklutein/deploy
+docker compose --env-file .env config --quiet
+docker compose --env-file .env up -d --build db api mcp router
+docker compose --env-file .env ps
+```
+
+`api` 绑定宿主 `127.0.0.1:8000`、`router` 绑定 `127.0.0.1:8080`，PostgreSQL 只绑定 `127.0.0.1:55432`，远程 MCP 端口只在 Docker 内部。腾讯云安全组**不要放行** 8000/8080/55432/3000。Docker 数据卷保存 PostgreSQL 数据；`migrations/0001_init.sql` 只在空数据卷第一次启动时运行，后续 Schema 变更须新增迁移并先备份。
+
+API 在生产环境要求网关密钥，直接 `curl http://127.0.0.1:8000/api/health` 返回 403 是预期行为。可在本地验证时由 shell 安全地读取网关密钥并携带 `X-Tasklutein-Gateway` Header，但不要在命令历史或日志中打印密钥。
+
+## 第二步：初始化 Cloudflare Tunnel
+
+Cloudflare Dashboard → Zero Trust → Networks → Tunnels → Create Tunnel，选择 `cloudflared` (Docker)。将云端提供的 Tunnel Token 写入服务器 `deploy/.env` 的 `CF_TUNNEL_TOKEN`，不写入 Git 或浏览器配置。
+
+为这个 Tunnel 增加公开 Hostname `origin-tasklutein.<domain>`，HTTP Service URL **`http://router:8080`**（运行在同一个 Docker Compose 网络里）。确认域名的 DNS/Tunnel 路由生效。
+
+```sh
+cd ~/apps/tasklutein/deploy
+docker compose --env-file .env --profile tunnel up -d
+docker compose --env-file .env --profile tunnel ps
+```
+
+**源站 Hostname 本身可在互联网上访问，但不能绕开网关认证。** 直接请求源站 `/api/health` 预期被拒绝（403），MCP 请求也需要额外的 Agent Bearer Token；Cloudflare Tunnel 不替代业务认证。后续可再配置 Cloudflare Access Service Token 作为额外防线，但这需要同步给 Worker 配置，不在当前 MVP 自动实现。
+
+## 第三步：初始化 Cloudflare Worker
+
+仓库根目录已经有 `wrangler.jsonc`：Worker 名为 `tasklutein`，入口 `apps/edge/src/index.ts`，静态资源 `apps/web/dist`，按 `/api/*` 与 `/mcp` 先运行 Worker；无关路径交给 Assets，SPA fallback 已配置。**不要再创建 Pages 项目**，这是一个完整 Worker + Assets 部署。
+
+两种初始化方式二选一：
+
+1. **推荐 Git 集成：** Cloudflare Dashboard → Workers & Pages → Create Worker → Connect to Git，选择 `xswt442-cmd/tasklutein`，Root 为仓库根目录，构建命令 `npm ci && npm run build:web`，部署命令 `npx wrangler deploy`，生产分支选 `main`。
+2. **本机手动初始化：** 在仓库根目录运行 `npx wrangler login`（需要你本人在浏览器授权），然后 `npm ci`、`npm run build:web`、`npx wrangler deploy`。首次部署将根据 wrangler 配置创建/更新同名 Worker；不要再重复创建 Git 项目。
+
+在 Cloudflare Worker 的 Runtime Settings / Variables and Secrets 中配置：
+
+| 配置名 | 位置 | 示例 |
+| --- | --- | --- |
+| `ORIGIN_URL` | Worker runtime variable | `https://origin-tasklutein.<domain>` |
+| `ORIGIN_GATEWAY_TOKEN` | Worker **Secret** | 必须与腾讯云 `EDGE_GATEWAY_TOKEN` 完全相同 |
+
+可以用 `npx wrangler secret put ORIGIN_GATEWAY_TOKEN` 交互式输入密钥；绝不把 Token 写入 `wrangler.jsonc` 的公开 `vars`，也不要写到 `VITE_*` 构建变量。使用 Git 自动部署时，确认目标 Worker 的运行时密钥会在下一次部署中保留。
+
+将公开的 Worker 绑定自定义域名 `tasklutein.<domain>`，或先使用 `*.workers.dev` 测试。浏览器访问页面并请求**同源**的 `/api/*`；不再配置 `VITE_API_BASE_URL`，也无需浏览器跨域访问腾讯云。
+
+## 第四步：本地 Worker 和 MCP 联调
+
+在 Windows 本地仓库可先运行 `npm ci`、`npm run check`；Worker 产物由 `npm run build:web` 构建，`npm run build:worker` 仅校验本地打包，不创建云端资源。
+
+若本地有 Docker Compose，复制 `deploy/.env.example` 为私有 `deploy/.env`，按同样方式配置密钥并启动 `db api mcp router`。再复制仓库根目录 `.dev.vars.example` 为 `.dev.vars`：
+- `ORIGIN_URL=http://127.0.0.1:8080`（仅本机开发允许 HTTP）。
+- `ORIGIN_GATEWAY_TOKEN` 与本地 `deploy/.env` 中的 `EDGE_GATEWAY_TOKEN` 相同。
+
+```powershell
+npm run dev:worker
+```
+
+测试 `http://127.0.0.1:8787/api/health`，再带 Web Token 请求任务接口。Vite 的 `npm run dev` 模式保留快速前端开发路径，直接代理本地 FastAPI，要求本地 FastAPI 开发环境未设置 `EDGE_GATEWAY_TOKEN`；它不能替代完整 Worker/Tunnel 联调。
+
+## 第五步：公网验收与 MCP 客户端
+
+先检查 `https://tasklutein.<domain>/api/health` 返回健康状态，而直接访问 `https://origin-tasklutein.<domain>/api/health` 返回 403。再确认 `/api/tasks` 未带 Bearer 返回 401；带有效 `WEB_ACCESS_TOKEN` 可以执行任务 CRUD，在手机上刷新能看到持久化数据。
+
+远程 MCP 地址：**`https://tasklutein.<domain>/mcp`**，使用 HTTP Streamable MCP，客户端必须在请求中添加 `Authorization: Bearer <AGENT_ACCESS_TOKEN>`。远程 MCP 运行在腾讯云 Node 容器中，Worker 只是透明路由，不做 MCP 工具执行。支持自定义请求头的 MCP 客户端可配置该 URL；OAuth-only 客户端当前无法直接连接。
+
+本地 stdio MCP 仍支持 `npm run mcp`，将 `TASKLUTEIN_API_BASE` 设为公开 Worker 站点（不带 `/api`），将 `TASKLUTEIN_API_TOKEN` 设为 Agent Token。不要在 Agent 提示词或提交到 Git 的客户端配置中放真实密钥。
+
+## 更新、回滚与安全清单
+
+采用 `dev` 日常开发、`main` 生产发布。GitHub Actions 的 `check.yml` 执行 CI；`release.yml` 在显式推送合规 Tag 后创建 GitHub Release，但**不会发布 Worker、不会 SSH 部署腾讯云**。维护者发布顺序与回滚规则详见 [`RELEASE.md`](../../RELEASE.md)。上线前 PR、`npm run check`、后端 pytest/Ruff、真实 PostgreSQL/MCP 联调都应通过。服务器更新需要人工执行 `git pull --ff-only` 和 `docker compose --env-file .env up -d --build`；Worker 可交给 Cloudflare Git 集成，或人工运行 `npx wrangler deploy`。
+
+数据库升级前备份 PostgreSQL；应用回滚不会自动回滚 Schema。公网部署还需设置 Cloudflare Rate Limiting/WAF、合理的日志脱敏、密钥轮换策略和告警。当前没有多用户身份、MCP OAuth、自动 Token 轮换或生产迁移编排，不要在 CV/README 中声称已经实现。
