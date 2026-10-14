@@ -1,0 +1,4 @@
+# LOCAL WRANGLER DEVELOPMENT ONLY. Copy to .dev.vars (gitignored).
+# For Worker dev with Docker, first start db/api/mcp/router using deploy/.env.
+ORIGIN_URL=http://127.0.0.1:8080
+ORIGIN_GATEWAY_TOKEN=REPLACE_WITH_SAME_VALUE_AS_DEPLOY_EDGE_GATEWAY_TOKEN

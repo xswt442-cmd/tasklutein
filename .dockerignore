@@ -1,0 +1,10 @@
+# Root build context for packages/mcp/Dockerfile: copy only sources needed.
+# Prevent local secrets, databases, user files and Python venv from entering the Docker build context.
+**
+!package.json
+!package-lock.json
+!packages/
+!packages/mcp/
+!packages/mcp/Dockerfile
+!packages/mcp/src/
+!packages/mcp/src/**

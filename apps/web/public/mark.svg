@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 128 128">
+
+  <!-- Completed task, rendered as a living stem. -->
+  <path d="M23 70 C32 64 37 64 45 71 L57 82 C68 63 83 51 104 40 C92 66 77 86 60 104 C54 110 48 108 43 102 L23 79 C21 76 21 73 23 70Z" fill="#078064"/>
+  <!-- A golden-yellow leaf alludes to lutein, the leaf pigment. -->
+  <path d="M59 79 C61 48 78 27 107 20 C110 54 93 78 62 92 C60 89 59 85 59 79Z" fill="#D4DA56"/>
+  <path d="M61 91 C73 67 86 49 102 33" fill="none" stroke="#F5F3A6" stroke-width="4.4" stroke-linecap="round"/>
+</svg>

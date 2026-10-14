@@ -1,0 +1,76 @@
+# All app ports are host-loopback only. The optional tunnel enters Caddy.
+# Cloudflare Worker injects a private gateway secret; API/MCP validate it.
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: tasklutein
+      POSTGRES_USER: tasklutein
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    volumes:
+      - tasklutein_db:/var/lib/postgresql/data
+      - ../migrations/0001_init.sql:/docker-entrypoint-initdb.d/0001_init.sql:ro
+    ports:
+      - "127.0.0.1:55432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tasklutein -d tasklutein"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: ../backend
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+psycopg://tasklutein:${POSTGRES_PASSWORD}@db:5432/tasklutein
+      WEB_ACCESS_TOKEN: ${WEB_ACCESS_TOKEN:?set WEB_ACCESS_TOKEN}
+      AGENT_ACCESS_TOKEN: ${AGENT_ACCESS_TOKEN:?set AGENT_ACCESS_TOKEN}
+      EDGE_GATEWAY_TOKEN: ${EDGE_GATEWAY_TOKEN:?set EDGE_GATEWAY_TOKEN}
+      WEB_ORIGINS: ${WEB_ORIGINS:-http://localhost:5173}
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  mcp:
+    build:
+      context: ..
+      dockerfile: packages/mcp/Dockerfile
+    restart: unless-stopped
+    environment:
+      MCP_API_BASE: http://api:8000
+      MCP_PORT: 3000
+      AGENT_ACCESS_TOKEN: ${AGENT_ACCESS_TOKEN:?set AGENT_ACCESS_TOKEN}
+      EDGE_GATEWAY_TOKEN: ${EDGE_GATEWAY_TOKEN:?set EDGE_GATEWAY_TOKEN}
+      MCP_ALLOWED_ORIGINS: ${MCP_ALLOWED_ORIGINS:-}
+    depends_on:
+      - api
+
+  router:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on:
+      - api
+      - mcp
+
+  # Enable only after creating a Cloudflare Tunnel hostname for the
+  # ORIGIN_URL used by the Worker, routing to http://router:8080.
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    profiles: ["tunnel"]
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CF_TUNNEL_TOKEN:-}
+    depends_on:
+      - router
+
+volumes:
+  tasklutein_db:
