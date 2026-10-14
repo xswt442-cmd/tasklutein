@@ -1,0 +1,17 @@
+:8080 {
+  @api path /api /api/*
+  handle @api {
+    reverse_proxy api:8000
+  }
+
+  @mcp path /mcp /mcp/*
+  handle @mcp {
+    reverse_proxy mcp:3000 {
+      flush_interval -1
+    }
+  }
+
+  handle {
+    respond "Not Found" 404
+  }
+}

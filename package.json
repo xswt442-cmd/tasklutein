@@ -1,0 +1,44 @@
+{
+  "name": "tasklutein",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "vite --config apps/web/vite.config.ts",
+    "dev:worker": "npm run build:web && wrangler dev --local",
+    "build": "npm run build:web",
+    "build:web": "vite build --config apps/web/vite.config.ts",
+    "build:worker": "wrangler deploy --dry-run --outdir .wrangler/dist",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "docs:check": "node scripts/check-docs.mjs",
+    "mcp:smoke": "node scripts/smoke-mcp.mjs",
+    "check": "npm run typecheck && npm test && npm run mcp:smoke && npm run docs:check && npm run build:web && npm run build:worker",
+    "mcp": "tsx packages/mcp/src/index.ts",
+    "mcp:http": "tsx packages/mcp/src/http-entry.ts",
+    "deploy:worker": "npm run check && wrangler deploy"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.20.0",
+    "lucide-react": "^0.468.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "tsx": "^4.23.15",
+    "zod": "^4.1.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.0",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "tailwindcss": "^4.1.0",
+    "typescript": "^5.9.0",
+    "vite": "^7.1.0",
+    "vitest": "^3.2.0",
+    "wrangler": "^4.151.0"
+  }
+}
