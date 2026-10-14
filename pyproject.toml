@@ -1,5 +1,18 @@
+[project]
+name = "tasklutein"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = []
+
 [tool.ruff]
 target-version = "py312"
+
+# The repository root is not an installable Python package. Some build
+# environments still run `pip install .` when they detect this file, so make
+# package discovery explicitly empty instead of scanning the monorepo.
+[tool.setuptools]
+packages = []
+py-modules = []
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F", "I", "B", "UP"]
