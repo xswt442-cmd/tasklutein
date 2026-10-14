@@ -103,9 +103,9 @@ npm run dev:worker
 
 ## 同时运行 main 生产站和 dev Preview
 
-生产和预览应使用两个 Worker：Production `tasklutein` 发布 `main`，Preview `tasklutein-preview` 发布 `dev`。本次 Cloudflare 盘点发现 `preview.tasklutein.xswt.fyi` 当前指向生产 Worker，所以不能把它当成 dev Preview。仓库现有 `wrangler.jsonc` 的 Worker 名是 `tasklutein`；新的 `wrangler.preview.jsonc` 使用不同名称 `tasklutein-preview`。不要把 dev 用生产配置部署。
+使用同一个 Cloudflare Worker `tasklutein`：`main` 是 Production，其他分支的 Preview Build 使用 `npx wrangler preview`。Cloudflare 自定义域 `preview.tasklutein.xswt.fyi` 已配置为 **Preview only**（根域本身关闭、Preview 子域开启），因此 `dev` 分支的稳定 Preview 地址是 `https://dev.preview.tasklutein.xswt.fyi`。不要把根域 `preview.tasklutein.xswt.fyi` 当成 dev 站点。
 
-仓库的 Cloudflare Workers Builds 保持生产分支 `main` 和生产部署命令不变；Preview Build 命令使用 `npm ci && npm run build:web` 与 `npx wrangler deploy --config wrangler.preview.jsonc`。因此 Preview 构建部署到独立的 `tasklutein-preview` Worker，而不是覆盖生产 `tasklutein`。先用 `tasklutein-preview.<account>.workers.dev` 验证预览 Worker，再把自定义域名 `preview.tasklutein.xswt.fyi` 从生产 Worker 有计划地迁移到 `tasklutein-preview`。迁移前确认预览后端、Worker 变量和 Secret 均已就绪，并记录原绑定以便回退。
+仓库的 [wrangler.jsonc](../../wrangler.jsonc) 已将 Preview 的 `ORIGIN_URL` 指向独立 Preview 源站；Production 仍从 Cloudflare Production Runtime Settings 读取生产源站变量。Preview 的 API、数据库和 Tunnel 也必须单独部署，不能复用生产后端。
 
 在服务器保留生产目录 `~/apps/tasklutein` 不动，另建 `dev` 工作目录和独立 Compose 项目：
 
@@ -118,7 +118,7 @@ chmod 600 .env.preview
 
 编辑 `.env.preview`：分别为 `POSTGRES_PASSWORD`、`WEB_ACCESS_TOKEN`、`AGENT_ACCESS_TOKEN`、`EDGE_GATEWAY_TOKEN` 生成全新的随机值，不能复用生产密钥。保留示例中的独立端口 `55433`、`8001`、`8081`。仅在 Cloudflare Preview 后端 Tunnel 已创建后填入该 Tunnel 的 `CF_TUNNEL_TOKEN`。
 
-Cloudflare Zero Trust 中创建**第二个独立 Tunnel**，公开主机名设为 `preview.origin-tasklutein.xswt.fyi`，服务指向 `http://router:8080`。然后启动只属于 Preview 的服务和数据库：
+Cloudflare Zero Trust 中创建**第二个独立 Tunnel**，公开主机名设为 `preview.origin-tasklutein.xswt.fyi`，服务指向 `http://router:8080`。把这个 Tunnel 的 Token 写入 Preview `.env.preview` 的 `CF_TUNNEL_TOKEN`，然后启动只属于 Preview 的服务和数据库：
 
 ```sh
 cd ~/apps/tasklutein-preview/deploy
@@ -130,19 +130,14 @@ docker compose --project-name tasklutein-preview --env-file .env.preview ps
 
 Compose 项目名会创建独立网络和带 `tasklutein-preview_` 前缀的数据卷；Preview 数据库只绑定回环地址 `127.0.0.1:55433`，不对公网开放。更新预览时只在 `~/apps/tasklutein-preview` 执行 `git pull --ff-only`，再用同一项目名执行 `docker compose --project-name tasklutein-preview --env-file .env.preview up -d --build`；不要在生产目录运行这组命令。
 
-Cloudflare Dashboard → 对应 Worker → Settings → Variables and Secrets，分别配置：
+Cloudflare Dashboard → Workers & Pages → `tasklutein` → Settings → Variables and Secrets → **Previews Base**：添加 Secret `ORIGIN_GATEWAY_TOKEN`，其值必须与 Preview `.env.preview` 的 `EDGE_GATEWAY_TOKEN` 完全相同。Production 和 Preview 两边的 Token 必须不同。Preview `ORIGIN_URL` 已由 `wrangler.jsonc` 的 `previews.vars` 提供。
 
-| 环境 | `ORIGIN_URL` 普通变量 | `ORIGIN_GATEWAY_TOKEN` Secret |
-| --- | --- | --- |
-| Production | `https://origin-tasklutein.xswt.fyi` | 与生产 `.env` 的 `EDGE_GATEWAY_TOKEN` 完全相同 |
-| `tasklutein-preview` Production 环境 | `https://preview.origin-tasklutein.xswt.fyi` | 与 Preview `.env.preview` 的 `EDGE_GATEWAY_TOKEN` 完全相同 |
+截图里的 `ORIGIN_PREVIEW_URL` 不会被 Worker 读取，应从 Preview Base 删除。Preview Base 中不要配置 Production Secret；不要把任何网关 Token 放入仓库或普通变量。
 
-两个 Worker 都使用 `ORIGIN_URL` 和 Secret `ORIGIN_GATEWAY_TOKEN`，但分别配置对应环境的值。截图里的 `ORIGIN_PREVIEW_URL` 不会被 Worker 读取，应删除或改为 `ORIGIN_URL`。不要把网关 Token 放入普通变量、构建变量或仓库。不要依赖生产 Worker 的 Preview Base 来提供域名隔离；本方案使用独立 Worker 和独立凭据。
-
-确认 `tasklutein-preview` 的 Build 只从 `dev` 部署。推送 `dev` 后检查：Production `https://tasklutein.xswt.fyi/api/health` 与 Preview `https://preview.tasklutein.xswt.fyi/api/health` 均返回健康状态；Preview 创建的任务只能在 Preview 站点看到，Production 数据不变。源站地址的 `/api/health` 应直接返回 403。两套 Worker、数据库和应用 Token 相互独立。
+确认 Cloudflare Workers Builds 的 Production branch 是 `main`、Preview Builds 已启用且 Preview command 为 `npx wrangler preview`。`dev` 推送后检查 Production `https://tasklutein.xswt.fyi/api/health` 与 Preview `https://dev.preview.tasklutein.xswt.fyi/api/health` 均返回健康状态。Preview 创建的任务只能在 Preview 站点看到；源站地址的 `/api/health` 应直接返回 403。
 
 ## 更新、回滚与安全清单
 
-采用 `dev` 日常开发和 Preview、`main` 生产发布。GitHub Actions 的 `check.yml` 执行 CI；`release.yml` 在显式推送合规 Tag 后创建 GitHub Release，但**不会发布 Worker、不会 SSH 部署腾讯云**。维护者发布顺序与回滚规则详见 [`RELEASE.md`](../../RELEASE.md)。上线前 PR、`npm run check`、后端 pytest/Ruff、真实 PostgreSQL/MCP 联调都应通过。生产服务器更新需要人工在生产目录执行 `git pull --ff-only` 和 `docker compose --env-file .env up -d --build`；Preview 服务器目录必须单独更新 `dev`，使用 `tasklutein-preview` 项目名。Worker 可交给 Cloudflare Git 集成，或人工运行 `npx wrangler deploy`。
+采用 `dev` 日常开发和 Preview、`main` 生产发布。GitHub Actions 的 `check.yml` 执行 CI；`release.yml` 在显式推送合规 Tag 后创建 GitHub Release，但**不会发布 Worker、不会 SSH 部署腾讯云**。维护者发布顺序与回滚规则详见 [`RELEASE.md`](../../RELEASE.md)。上线前 PR、`npm run check`、后端 pytest/Ruff、真实 PostgreSQL/MCP 联调都应通过。生产服务器与 Preview 服务器使用不同目录和 Compose 项目；Worker 由 Cloudflare Git Builds 按分支构建。
 
 数据库升级前备份 PostgreSQL；应用回滚不会自动回滚 Schema。公网部署还需设置 Cloudflare Rate Limiting/WAF、合理的日志脱敏、密钥轮换策略和告警。当前没有多用户身份、MCP OAuth、自动 Token 轮换或生产迁移编排，不要在 CV/README 中声称已经实现。

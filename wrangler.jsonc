@@ -9,5 +9,10 @@
     "not_found_handling": "single-page-application",
     "run_worker_first": ["/api/*", "/api", "/mcp", "/mcp/*"]
   },
+  "previews": {
+    "vars": {
+      "ORIGIN_URL": "https://preview.origin-tasklutein.xswt.fyi"
+    }
+  },
   "observability": { "enabled": true }
 }
