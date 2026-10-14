@@ -1,0 +1,20 @@
+# Optional build-only proxy overlay for Linux hosts with Mihomo on port 7890.
+# Runtime containers remain on their normal Compose network.
+services:
+  api:
+    build:
+      network: host
+      args:
+        HTTP_PROXY: http://127.0.0.1:7890
+        HTTPS_PROXY: http://127.0.0.1:7890
+        http_proxy: http://127.0.0.1:7890
+        https_proxy: http://127.0.0.1:7890
+
+  mcp:
+    build:
+      network: host
+      args:
+        HTTP_PROXY: http://127.0.0.1:7890
+        HTTPS_PROXY: http://127.0.0.1:7890
+        http_proxy: http://127.0.0.1:7890
+        https_proxy: http://127.0.0.1:7890

@@ -122,13 +122,13 @@ Cloudflare Zero Trust 中创建**第二个独立 Tunnel**，公开主机名设�
 
 ```sh
 cd ~/apps/tasklutein-preview/deploy
-docker compose --project-name tasklutein-preview --env-file .env.preview config --quiet
-docker compose --project-name tasklutein-preview --env-file .env.preview up -d --build db api mcp router
-docker compose --project-name tasklutein-preview --env-file .env.preview --profile tunnel up -d tunnel
-docker compose --project-name tasklutein-preview --env-file .env.preview ps
+docker compose --project-name tasklutein-preview -f compose.yml -f compose.mihomo.yml --env-file .env.preview config --quiet
+docker compose --project-name tasklutein-preview -f compose.yml -f compose.mihomo.yml --env-file .env.preview up -d --build db api mcp router
+docker compose --project-name tasklutein-preview -f compose.yml -f compose.mihomo.yml --env-file .env.preview --profile tunnel up -d tunnel
+docker compose --project-name tasklutein-preview -f compose.yml -f compose.mihomo.yml --env-file .env.preview ps
 ```
 
-Compose 项目名会创建独立网络和带 `tasklutein-preview_` 前缀的数据卷；Preview 数据库只绑定回环地址 `127.0.0.1:55433`，不对公网开放。更新预览时只在 `~/apps/tasklutein-preview` 执行 `git pull --ff-only`，再用同一项目名执行 `docker compose --project-name tasklutein-preview --env-file .env.preview up -d --build`；不要在生产目录运行这组命令。
+Compose 项目名会创建独立网络和带 `tasklutein-preview_` 前缀的数据卷；Preview 数据库只绑定回环地址 `127.0.0.1:55433`，不对公网开放。`compose.mihomo.yml` 只让镜像构建步骤通过宿主机 Mihomo 代理，运行中的容器仍处在隔离的 Compose 网络。更新预览时只在 `~/apps/tasklutein-preview` 执行 `git pull --ff-only`，再用同一组 `-f compose.yml -f compose.mihomo.yml` 和项目名执行 `up -d --build`；不要在生产目录运行这组命令。
 
 Cloudflare Dashboard → Workers & Pages → `tasklutein` → Settings → Variables and Secrets → **Previews Base**：添加 Secret `ORIGIN_GATEWAY_TOKEN`，其值必须与 Preview `.env.preview` 的 `EDGE_GATEWAY_TOKEN` 完全相同。Production 和 Preview 两边的 Token 必须不同。Preview `ORIGIN_URL` 已由 `wrangler.jsonc` 的 `previews.vars` 提供。
 

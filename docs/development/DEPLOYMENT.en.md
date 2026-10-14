@@ -122,13 +122,13 @@ In Cloudflare Zero Trust, create a **second, separate Tunnel** with public hostn
 
 ```sh
 cd ~/apps/tasklutein-preview/deploy
-docker compose --project-name tasklutein-preview --env-file .env.preview config --quiet
-docker compose --project-name tasklutein-preview --env-file .env.preview up -d --build db api mcp router
-docker compose --project-name tasklutein-preview --env-file .env.preview --profile tunnel up -d tunnel
-docker compose --project-name tasklutein-preview --env-file .env.preview ps
+docker compose --project-name tasklutein-preview -f compose.yml -f compose.mihomo.yml --env-file .env.preview config --quiet
+docker compose --project-name tasklutein-preview -f compose.yml -f compose.mihomo.yml --env-file .env.preview up -d --build db api mcp router
+docker compose --project-name tasklutein-preview -f compose.yml -f compose.mihomo.yml --env-file .env.preview --profile tunnel up -d tunnel
+docker compose --project-name tasklutein-preview -f compose.yml -f compose.mihomo.yml --env-file .env.preview ps
 ```
 
-The Compose project name creates a separate network and a database volume prefixed with `tasklutein-preview_`. Preview PostgreSQL binds only to `127.0.0.1:55433`; it is not exposed publicly. To update Preview, run `git pull --ff-only` in `~/apps/tasklutein-preview`, then run `docker compose --project-name tasklutein-preview --env-file .env.preview up -d --build` from its `deploy` directory. Never run these commands from the Production checkout.
+The Compose project name creates a separate network and a database volume prefixed with `tasklutein-preview_`. Preview PostgreSQL binds only to `127.0.0.1:55433`; it is not exposed publicly. `compose.mihomo.yml` routes only image-build steps through the host's Mihomo proxy; running containers remain on the isolated Compose network. To update Preview, run `git pull --ff-only` in `~/apps/tasklutein-preview`, then run `up -d --build` with the same `-f compose.yml -f compose.mihomo.yml` and project name from its `deploy` directory. Never run these commands from the Production checkout.
 
 In Cloudflare Dashboard → Workers & Pages → `tasklutein` → Settings → Variables and Secrets → **Previews Base**, add the `ORIGIN_GATEWAY_TOKEN` Secret. Its value must exactly match the Preview `.env.preview` `EDGE_GATEWAY_TOKEN`. Production and Preview tokens must be different. Preview `ORIGIN_URL` is provided by `previews.vars` in `wrangler.jsonc`.
 
