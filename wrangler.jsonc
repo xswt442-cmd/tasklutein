@@ -11,7 +11,7 @@
   },
   "previews": {
     "vars": {
-      "ORIGIN_URL": "https://preview.origin-tasklutein.xswt.fyi"
+      "ORIGIN_URL": "https://preview-origin-tasklutein.xswt.fyi"
     }
   },
   "observability": { "enabled": true }

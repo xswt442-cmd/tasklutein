@@ -118,7 +118,7 @@ chmod 600 .env.preview
 
 编辑 `.env.preview`：分别为 `POSTGRES_PASSWORD`、`WEB_ACCESS_TOKEN`、`AGENT_ACCESS_TOKEN`、`EDGE_GATEWAY_TOKEN` 生成全新的随机值，不能复用生产密钥。保留示例中的独立端口 `55433`、`8001`、`8081`。仅在 Cloudflare Preview 后端 Tunnel 已创建后填入该 Tunnel 的 `CF_TUNNEL_TOKEN`。
 
-Cloudflare Zero Trust 中创建**第二个独立 Tunnel**，公开主机名设为 `preview.origin-tasklutein.xswt.fyi`，服务指向 `http://router:8080`。把这个 Tunnel 的 Token 写入 Preview `.env.preview` 的 `CF_TUNNEL_TOKEN`，然后启动只属于 Preview 的服务和数据库：
+Cloudflare Zero Trust 中创建**第二个独立 Tunnel**，公开主机名设为 `preview-origin-tasklutein.xswt.fyi`，服务指向 `http://router:8080`。这个一级子域名由现有 Universal SSL 证书覆盖。把这个 Tunnel 的 Token 写入 Preview `.env.preview` 的 `CF_TUNNEL_TOKEN`，然后启动只属于 Preview 的服务和数据库：
 
 ```sh
 cd ~/apps/tasklutein-preview/deploy

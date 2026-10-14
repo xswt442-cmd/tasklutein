@@ -118,7 +118,7 @@ chmod 600 .env.preview
 
 Edit `.env.preview` and generate fresh, unique values for `POSTGRES_PASSWORD`, `WEB_ACCESS_TOKEN`, `AGENT_ACCESS_TOKEN`, and `EDGE_GATEWAY_TOKEN`. Do not reuse Production secrets. Keep the separate ports `55433`, `8001`, and `8081`. Set `CF_TUNNEL_TOKEN` only after creating the dedicated Preview origin Tunnel.
 
-In Cloudflare Zero Trust, create a **second, separate Tunnel** with public hostname `preview.origin-tasklutein.xswt.fyi` and service `http://router:8080`. Put its Tunnel Token in Preview `.env.preview` as `CF_TUNNEL_TOKEN`, then start only the Preview stack:
+In Cloudflare Zero Trust, create a **second, separate Tunnel** with public hostname `preview-origin-tasklutein.xswt.fyi` and service `http://router:8080`. This single-level subdomain is covered by the existing Universal SSL certificate. Put its Tunnel Token in Preview `.env.preview` as `CF_TUNNEL_TOKEN`, then start only the Preview stack:
 
 ```sh
 cd ~/apps/tasklutein-preview/deploy
