@@ -1,0 +1,17 @@
+# Preview-only Cloudflare Tunnel connector.
+# This is a separate Compose project and joins only the Preview app network.
+# Never attach it to deploy_default or start it with Production's env file.
+services:
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CF_TUNNEL_TOKEN:?set Preview CF_TUNNEL_TOKEN}
+    networks:
+      - preview_origin
+
+networks:
+  preview_origin:
+    external: true
+    name: tasklutein-preview_default

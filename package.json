@@ -13,13 +13,16 @@
     "build:web": "vite build --config apps/web/vite.config.ts",
     "build:worker": "wrangler deploy --dry-run --outdir .wrangler/dist",
     "typecheck": "tsc --noEmit",
+    "check:scripts": "node --check scripts/preview-smoke.mjs && node --check scripts/preview-e2e.mjs",
     "test": "vitest run",
     "docs:check": "node scripts/check-docs.mjs",
+    "smoke:preview": "node scripts/preview-smoke.mjs",
+    "e2e:preview": "node scripts/preview-e2e.mjs",
     "mcp:smoke": "node scripts/smoke-mcp.mjs",
-    "check": "npm run typecheck && npm test && npm run mcp:smoke && npm run docs:check && npm run build:web && npm run build:worker",
+    "check": "npm run typecheck && npm run check:scripts && npm test && npm run mcp:smoke && npm run docs:check && npm run build:web && npm run build:worker",
     "mcp": "tsx packages/mcp/src/index.ts",
     "mcp:http": "tsx packages/mcp/src/http-entry.ts",
-    "deploy:worker": "npm run check && wrangler deploy"
+    "deploy:worker": "npm run check && wrangler deploy --keep-vars"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.20.0",
@@ -31,14 +34,17 @@
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.1.0",
+    "@testing-library/dom": "^10.4.2",
+    "@testing-library/react": "^16.3.3",
     "@types/node": "^24.0.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^5.0.0",
+    "jsdom": "^30.1.2",
     "tailwindcss": "^4.1.0",
     "typescript": "^5.9.0",
     "vite": "^7.1.0",
-    "vitest": "^3.2.0",
+    "vitest": "^4.1.11",
     "wrangler": "^4.151.0"
   }
 }

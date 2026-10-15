@@ -79,6 +79,7 @@ export function createHttpMcpServer(config: HttpMcpConfig): Server {
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
       enableJsonResponse: true,
+      maxRequestBodySize: 1024 * 1024,
     });
     const server = createTaskluteinMcpServer(config);
     res.on("close", () => {

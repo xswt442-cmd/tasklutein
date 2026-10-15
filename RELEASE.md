@@ -8,6 +8,28 @@ Tasklutein 是 **Cloudflare Worker + 腾讯云 Docker + FastAPI + PostgreSQL + M
 
 `dev` 用于日常功能开发，`main` 用于已验证的可发布代码。Worker 负责 Web Assets 和 `/api/*`、`/mcp` 网关；腾讯云负责持久化、业务以及远程 MCP 服务，禁止把业务逻辑移入 Worker 来规避后端部署。
 
+## Production 发布前的阻断性检查
+
+> **2026-10-15 核验状态：** `main` 落后于 `dev`；生产腾讯云 checkout 为 `main/4b4d6e6`。已在腾讯云生产 DB 卷**之外**生成受限权限的 `pg_dump -Fc` 备份，SHA-256 校验通过，并在 `--network none`、`tmpfs` 临时 PostgreSQL 17 中恢复出 `tasks`/`reports` 表、核对记录数（当时生产为 0/0）。生产和 Preview 的 API/MCP 容器镜像 SHA 一致，Git 对比表明本轮没有后端业务 API 契约变化。**这是一份同主机备份，不是异地容灾；合并 `main` 前仍须确认快照仍可读取、保存回滚点并由维护者明确授权。**
+
+1. **备份与恢复：** 生产备份存放在维护者私有目录（默认 `~/backups/tasklutein-production/`），权限为目录 700、文件 600，**不在**数据库 Volume 内。使用 `scripts/production-backup.sh` 重新制作时间戳备份与 SHA-256；再用 `scripts/production-restore-check.sh` 在断网、RAM 后端的临时 PostgreSQL 中恢复。操作从不覆盖/重启现有生产 DB，恢复容器自动清理。备份仍在同一台 VPS 上；正式长期运行前应另行配置**加密的异机/离线副本、保留期限和定期恢复演练**。备份文件、口令与真实密钥绝不可入 Git 或聊天。
+2. **生产兼容性：** 比对生产腾讯云 FastAPI/MCP 镜像实际代码与待发布 Web Worker 使用的 API/MCP 契约。若需要后端更新或 Schema 变更，应先获得独立的生产服务器操作授权、确定备份/回滚步骤，再按后端→Worker 的兼容顺序执行；不得默认 `main` push 会部署腾讯云。
+3. **Cloudflare Dashboard 变量：** 生产 Worker 的 `ORIGIN_URL` 目前是 Dashboard 管理的普通变量，目标为 `https://origin-tasklutein.xswt.fyi`。仓库 `wrangler.jsonc` 通过 `keep_vars: true` 保留已有 Dashboard 变量；手工执行 `npm run deploy:worker` 时额外使用 `--keep-vars`。保留 secret binding `ORIGIN_GATEWAY_TOKEN`，不要导出其值。Cloudflare Git 自动部署命令可能仍为 `npx wrangler deploy`；必须在**计划发布的那个提交**中确认 Wrangler 解析到 `keep_vars: true`，并在部署后只读核对生产绑定名称、类型和非敏感回源 URL。不能把 dry-run 当成运行时配置验收。
+4. **主分支触发器：** 先确认 Cloudflare Git Production 自动构建确实监控 `main`，收集旧 Worker deployment/version、当前生产健康状态及回滚步骤。合并 `dev` → `main` 与触发生产发布属于**同一有副作用的发布动作**，需维护者单独批准。
+5. **上线后一跳一验：** 先只读校验 `/api/health` 返回 200、匿名 API 为 401、直连 Production Origin 为 403，再经授权执行真实 Web CRUD 和 MCP 工具测试；必须明确使用 Production 凭据和隔离的测试数据。若出现 503、鉴权失效或串环境，停止下一步，按既定版本与配置回滚并留存脱敏证据。
+
+即使 `npm run check`、GitHub Actions 和 Preview 全绿，只要上述任何一项缺证据，不得宣称新版已上线。已有**单次**生产快照及隔离恢复通过；是否接受同主机快照作为首次上线回滚保障，由维护者决定，离线副本不应长期缺席。
+
+生产备份脚本只能在 `tx-z02` 主机以 Docker 授权的维护账户执行（不是在本地 Windows Docker Engine 上执行）：
+
+```bash
+bash scripts/production-backup.sh
+bash scripts/production-restore-check.sh "$HOME/backups/tasklutein-production/tasklutein-production-YYYYMMDDTHHMMSSZ.dump"
+```
+
+其中第二条的文件名取自第一条输出；运行前先把本仓库脚本安全传到服务器、确认来源与内容，不要重新初始化或覆盖现有部署。若从 Windows PowerShell 经 SSH 的标准输入直接传脚本，要防止 CRLF；可以在远程用 `tr -d '\r' | bash -s` 规范化行尾。两份脚本不收集 Token，恢复演练使用独立 `--network none` 容器，不对生产数据写入。
+
+
 ## 每次发布
 
 1. 在 `dev` 收敛变更、确认测试通过、更新 `CHANGELOG.md` 的中英文 Unreleased。版本号从 `0.1.0` 起，以实际发布状态为准，**尚未实际发布前不能宣称 v0.1.0 已上线**。

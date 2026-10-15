@@ -2,107 +2,60 @@
 
 English · [简体中文](DEPLOYMENT.zh-CN.md)
 
-## Target Topology and Prerequisites
+## Current Live Topology (Read-Only Audit, 2026-10-15)
 
-**Cloudflare Worker** serves React, `/api/*`, and `/mcp` through one public gateway. **Tencent Cloud `tx-z02`** runs FastAPI, PostgreSQL, and remote MCP Server in Docker. Internal Caddy dispatches API/MCP paths, while Cloudflare Tunnel carries HTTPS origin requests to Caddy. Business data stays on Tencent.
+Production and an isolated Preview already exist. This is a snapshot from 2026-10-15. For this run, the Owner explicitly authorized pushing `dev` and deploying Preview; the Production app and custom site domain were not changed.
 
-These are **repository deployment configurations, not evidence of a live deployment**. No cloud resources, production services, or real secrets have been provisioned. Node.js 24+ is required to build the Worker; Ubuntu needs Docker Engine and Docker Compose v2. Earlier read-only inspection found Ubuntu 24.04 and Docker Engine on `tx-z02` but no Compose v2 plugin. Recheck before installing.
+| Environment | Web / Worker | Origin | Tencent Compose / Git | Database |
+| --- | --- | --- | --- | --- |
+| Production | `https://tasklutein.xswt.fyi`; Worker `tasklutein` | `https://origin-tasklutein.xswt.fyi` | `/home/xswt/apps/tasklutein`; `main` / `4b4d6e6`; Compose project `deploy`, 5 running containers | PostgreSQL healthy; volume `deploy_tasklutein_db` |
+| Preview | `https://dev.preview.tasklutein.xswt.fyi`; Worker Preview name `dev` | `https://preview-origin-tasklutein.xswt.fyi` | Worker tag `e314080`; VPS API/MCP checkout `dev` / `b9bcd83`; Compose project `tasklutein-preview`, 4 running containers; separate Tunnel project | PostgreSQL healthy; volume `tasklutein-preview_tasklutein_db` |
 
-Plan two distinct hostnames; never route the origin hostname back to the app Worker:
-- **Public app:** `https://tasklutein.<domain>` (Worker: web, `/api/*`, `/mcp`).
-- **Tunnel origin:** `https://origin-tasklutein.<domain>` (Worker-only origin guarded by a shared secret).
+The environments use separate Docker networks, database volumes, and Tunnels; host ports bind to `127.0.0.1` only. The Cloudflare Workers Preview API lists deployment #7 as latest for Preview `dev` (`b7924981-26dc-4561-9115-136666908477`; immutable URL: `https://b7924981.preview.tasklutein.xswt.fyi`). Its deployment tag is the full commit SHA `e314080681a8b4b25b111ac7d2332cd948f0eeeb`. The stable and immutable Preview URLs serve `/assets/index-DRk5H8X7.js`; health is 200 and anonymous task API is 401. Deployment configuration has `ORIGIN_URL=https://preview-origin-tasklutein.xswt.fyi` and an `ORIGIN_GATEWAY_TOKEN` secret binding (name/type only; value not read). The Production Worker remains at its separate deployment #5 and was not updated.
 
-## Step 1: Initialize Tencent Docker
+With explicit Owner authorization, the `xswt.fyi` zone's `always_use_https` setting was changed from `off` to `on`; SSL mode is `Full`. Read-only HEAD checks covered all nine hostnames in the Cloudflare DNS result (including `dev.preview.tasklutein.xswt.fyi`): HTTP requests returned 301 or 308, and HTTPS connections succeeded. Production and Preview Tasklutein `/api/health` return 200; both direct origin health requests remain 403. The only DNS-only hostname returns its own 308. The Worker HTTP-to-HTTPS fallback is also deployed in Preview #5.
 
-This guide does **not** automatically SSH or install anything. After `ssh tx-z02`, if `docker compose version` is unavailable, an authorized server administrator can install:
+Baseline public checks: Preview `/api/health` returned 200; anonymous `/api/tasks` and `/mcp` returned 401; direct anonymous Preview API/MCP origin requests returned 403. Production `/api/health` returned 200 and its API origin returned 403 anonymously. A real HTTPS browser created a tagged task and a `source=user` report; remote MCP `list_tasks` found that same task and added a `source=agent` report. Browser refresh displayed the task and both reports; Web API reads returned 200, and Preview PostgreSQL contained that task and both reports. Restarting Preview `api` and `mcp` containers preserved the original records across MCP, SQL, and browser reads; a separate task/report also survived the PostgreSQL-container restart. The records were deleted through the UI and SQL confirmed zero remaining task/report rows. Preview Worker #7 adds accessible names for task/report fields and exposes the selected status filter; Playwright checked the real Preview at 360/390/430px with no horizontal overflow and a 44px minimum button height. All five `npm run smoke:preview` checks passed. A sanitized server-side comparison confirmed the Web, Agent, gateway, and Tunnel secrets met strength requirements, were pairwise distinct per environment, and differed between Preview and Production; MCP/API Agent and gateway values matched within each environment. No secret values were printed. A Preview Web token sent to Production API for a nonexistent task ID returned 401; no Production task data was read or written. Cloudflare Zone Rulesets API lists only managed Normalization, Managed Free, and DDoS L7 rulesets, with no custom or rate-limit ruleset; a legacy rate-limit API query was unavailable, and no WAF settings were changed. A protected logical Production backup was created on 2026-10-15 under the VPS maintainer's dedicated backup directory, outside the PostgreSQL volume. Its SHA-256 was verified, and it restored the `tasks` and `reports` tables in a disposable PostgreSQL 17 instance with `--network none` and tmpfs; Production held zero task/report rows at the time. **This remains an on-host snapshot, not off-host disaster recovery.** Reverse application-layer token rejection by Preview remains unverified. The Production Worker/app, data, and custom site domain were not changed; zone-level HTTPS changed with Owner authorization. The Production token was not read.
 
-```sh
-sudo apt-get update
-sudo apt-get install -y docker-compose-v2
-docker compose version
-```
+## Data Flow and Boundaries
 
-After merging verified code to `main` and pushing it, deploy from the release branch:
+Playwright intercepted one `/api/tasks` request on the real Preview page and returned 503 locally (no server change); the UI showed its unavailable state and retry guidance. After removing the interception, reload restored “已连接”. Narrow viewport checks at 360/390/430px found no horizontal overflow and a 44px minimum button height. Text inputs expose accessible names and the status-filter group announces its pressed state; these checks do not replace physical-device keyboard or assistive-technology acceptance.
 
-```sh
-mkdir -p ~/apps
-git clone --branch main https://github.com/xswt442-cmd/tasklutein.git ~/apps/tasklutein
-cd ~/apps/tasklutein/deploy
-cp .env.example .env
-chmod 600 .env
-```
+The browser and MCP clients use the Cloudflare Worker. It forwards API/MCP requests through Cloudflare Tunnel to Tencent Caddy, which routes them to FastAPI or Node MCP; those services access PostgreSQL.
 
-Edit `deploy/.env`, using `openssl rand -hex 32` to generate **four different** secrets: `POSTGRES_PASSWORD`, `WEB_ACCESS_TOKEN`, `AGENT_ACCESS_TOKEN`, and `EDGE_GATEWAY_TOKEN`. Never use placeholder values. `CF_TUNNEL_TOKEN` can remain empty until the next step.
+- The Worker serves static Web assets and the public `/api/*` and `/mcp` ingress only. FastAPI owns business validation and task/report persistence; MCP tools call that API.
+- Production and Preview have separate Worker runtime settings, Tunnels, Compose projects, and database volumes. Do not connect Preview data, ports, or secrets to Production.
+- Gateway, Web, and Agent bearer secrets are independent. Keep secrets in runtime configuration, never Git, plain `wrangler.jsonc` variables, `VITE_*`, or logs.
+- Remote HTTP MCP currently uses a stateless transport per POST with JSON responses. The lockfile resolves an MCP SDK whose highest supported protocol version is `2025-11-25`. OAuth, event resumption, and the newer `2026-07-28` transport metadata semantics are not implemented.
 
-```sh
-cd ~/apps/tasklutein/deploy
-docker compose --env-file .env config --quiet
-docker compose --env-file .env up -d --build db api mcp router
-docker compose --env-file .env ps
-```
+## Local Verification and Read-Only Preview Smoke
 
-`api` binds to host `127.0.0.1:8000`, `router` to `127.0.0.1:8080`, and PostgreSQL only to `127.0.0.1:55432`. Remote MCP publishes no host port. **Do not** open ports 8000/8080/55432/3000 in the Tencent security group. The Docker volume persists PostgreSQL. `migrations/0001_init.sql` runs once for a fresh database volume. Add versioned migrations and back up data for later schema changes.
-
-In production the API requires an origin gateway secret, so a direct `curl http://127.0.0.1:8000/api/health` returning 403 is expected. For loopback diagnostics, supply `X-Tasklutein-Gateway` using securely sourced credentials, not plaintext command history or logs.
-
-## Step 2: Initialize Cloudflare Tunnel
-
-In Cloudflare Dashboard → Zero Trust → Networks → Tunnels → Create Tunnel, choose Docker/cloudflared. Store the given Tunnel Token only in Tencent's `deploy/.env` as `CF_TUNNEL_TOKEN`, never in Git or browser builds.
-
-Add a public hostname `origin-tasklutein.<domain>` with HTTP service URL **`http://router:8080`** (same Docker Compose network). Confirm the DNS/Tunnel route.
-
-```sh
-cd ~/apps/tasklutein/deploy
-docker compose --env-file .env --profile tunnel up -d
-docker compose --env-file .env --profile tunnel ps
-```
-
-The origin hostname can be addressed from the internet, but **cannot bypass origin gateway checks**: direct requests to `/api/health` must receive 403, and MCP also requires a valid Agent Bearer Token. Cloudflare Tunnel itself is not app authentication. Cloudflare Access Service Tokens could provide another layer later, but must also be configured in Worker requests; they are not implemented by this scaffold.
-
-## Step 3: Initialize Cloudflare Worker
-
-Root `wrangler.jsonc` defines the Worker name `tasklutein`, entrypoint `apps/edge/src/index.ts`, static assets in `apps/web/dist`, Worker-first routing for `/api/*` and `/mcp`, and an SPA fallback. **Do not create a Pages project**; this is a Worker + Assets deployment.
-
-Choose one initialization flow:
-
-1. **Recommended Git integration:** Cloudflare Dashboard → Workers & Pages → Create Worker → Connect to Git, select `xswt442-cmd/tasklutein`, repository root, build command `npm ci && npm run build:web`, deploy command `npx wrangler deploy`, and production branch `main`.
-2. **Manual initialization:** Run `npx wrangler login` from the repository root (interactive browser authorization), then `npm ci`, `npm run build:web`, and `npx wrangler deploy`. Wrangler will create/update the named Worker. Do not independently create a duplicate Git deployment.
-
-Set Worker runtime variables/secrets in Cloudflare dashboard:
-
-| Key | Storage | Example |
-| --- | --- | --- |
-| `ORIGIN_URL` | Worker runtime variable | `https://origin-tasklutein.<domain>` |
-| `ORIGIN_GATEWAY_TOKEN` | Worker **Secret** | Exactly equals Tencent `EDGE_GATEWAY_TOKEN` |
-
-You may use `npx wrangler secret put ORIGIN_GATEWAY_TOKEN` interactively. Never put credentials in `wrangler.jsonc` public `vars` or Vite `VITE_*` build variables. With Git deployment, confirm runtime secrets persist across deployments.
-
-Map the Worker to `tasklutein.<domain>`, or test with `*.workers.dev` first. Browser requests `/api/*` on **the same public origin**. No `VITE_API_BASE_URL` or browser-to-Tencent CORS configuration is needed.
-
-## Step 4: Local Worker and MCP Development
-
-On Windows, run `npm ci` and `npm run check`. `npm run build:web` creates the assets; `npm run build:worker` performs a local Wrangler dry run, creating no cloud resources.
-
-With a local Docker Compose installation, copy `deploy/.env.example` to private `deploy/.env`, set secrets, and start `db api mcp router`. Then copy root `.dev.vars.example` to `.dev.vars`:
-- `ORIGIN_URL=http://127.0.0.1:8080` (HTTP allowed only on local loopback).
-- `ORIGIN_GATEWAY_TOKEN` exactly equals the local `deploy/.env` `EDGE_GATEWAY_TOKEN`.
+Run local checks from the Windows checkout:
 
 ```powershell
-npm run dev:worker
+npm run check
+& .\backend\.venv\Scripts\python.exe -m pytest -q
+& .\backend\.venv\Scripts\ruff.exe check backend/app backend/tests
+docker compose -f deploy/compose.yml --env-file deploy/.env.preview.example config --quiet
 ```
 
-Check `http://127.0.0.1:8787/api/health`, then authenticated task operations. The faster Vite `npm run dev` workflow proxies to local FastAPI with `EDGE_GATEWAY_TOKEN` unset in that development server; it does not replace full Worker/Tunnel validation.
+`npm run build:worker` is a Wrangler dry run; it does not deploy. `npm run smoke:preview` sends unauthenticated, read-only public requests to check Preview health, anonymous rejection, and origin rejection. It does not write tasks and cannot prove real token authentication, database persistence, or MCP tool calls. Its default targets are `dev.preview.tasklutein.xswt.fyi` and `preview-origin-tasklutein.xswt.fyi`.
 
-## Step 5: Public Acceptance and MCP Client
+If the local Docker Engine is unavailable, Compose `config --quiet` validates only static configuration, not container startup or database connectivity. A real Preview write test needs an agreed test-data and cleanup procedure and must use Preview credentials only.
 
-Verify `https://tasklutein.<domain>/api/health` succeeds while direct `https://origin-tasklutein.<domain>/api/health` returns 403. `/api/tasks` without Bearer must return 401; with valid `WEB_ACCESS_TOKEN` task CRUD works and data persists after mobile refresh.
+The planned authenticated API/MCP loop can be run in an approved environment with `npm run e2e:preview`. Provide `TASKLUTEIN_PREVIEW_WEB_TOKEN` and `TASKLUTEIN_PREVIEW_AGENT_TOKEN` securely in the current process; do not echo or save them. The script is pinned to `dev.preview.tasklutein.xswt.fyi`, requires distinct tokens, creates one uniquely tagged `[smoke-test]` task, verifies Web CRUD/user attribution and MCP Agent attribution, then deletes the task and confirms API reads return 404. If cleanup fails, it reports that condition; check for the unique tagged task before rerunning. This verifies the API/MCP loop, not browser DOM, mobile keyboard behavior, or persistence after a service restart. Never set these variables to Production credentials.
 
-Remote MCP URL: **`https://tasklutein.<domain>/mcp`**, using HTTP Streamable MCP. Requests must contain `Authorization: Bearer <AGENT_ACCESS_TOKEN>`. The MCP implementation runs in the Tencent Node container; Cloudflare only routes packets. MCP clients supporting custom authentication headers can use the URL; OAuth-only clients cannot connect directly yet.
+## Change and Release Rules
 
-Local stdio MCP remains available through `npm run mcp` with `TASKLUTEIN_API_BASE` set to the public Worker site (without `/api`) and `TASKLUTEIN_API_TOKEN` set to the Agent Token. Do not place real credentials in agent prompts or committed MCP configuration.
+- `dev` is for daily development and Preview; `main` is the Production release branch. For this run, the Owner explicitly authorized the commit, `dev` push, Preview Worker deployment, Preview E2E writes, and cleanup. No Production Worker or custom site domain was changed. Future Production releases, server configuration/key changes, or Production data writes need authorization scoped to those actions.
+- Existing server directories are already running. Do not clone them again, recreate Tunnels/Workers, reinitialize databases, or replay `migrations/0001_init.sql`. The Preview checkout has a local Mihomo Compose override; inspect the actual server configuration before using it, and do not copy older commands blindly.
+- Any approved Preview update should record the local SHA and remote Preview checkout/Worker version first, verify that the Production target is unchanged, then update only the Preview Compose project. Rolling back application code does not roll back database schema.
+- Production release requires separate approval, backup/restore evidence, and an explicit rollback point. Cloudflare WAF, rate limits, and Secret changes are runtime changes.
+- A GitHub Release is not a Worker deployment. See [`RELEASE.md`](../../RELEASE.md) for release and rollback procedures.
 
-## Updates, Rollbacks, and Security Checklist
+## Not Yet Verified
 
-Use `dev` for ongoing development and `main` for production. GitHub Actions `check.yml` runs CI; `release.yml` creates a GitHub Release after an explicitly pushed valid Tag, but **never deploys Worker or SSH-deploys Tencent**. See the maintainer [`RELEASE.md`](../../RELEASE.md) for release order and rollback procedures. Before release, check PR, `npm run check`, backend pytest/Ruff, and real PostgreSQL/MCP integration. Update the server manually with `git pull --ff-only` and `docker compose --env-file .env up -d --build`; deploy Worker via Cloudflare Git integration or `npx wrangler deploy`.
-
-Back up PostgreSQL before migrations; reverting app code never reverses database schema. Production also needs Cloudflare rate limits/WAF, redacted logs, secret rotation, and alerts. No multi-user accounts, MCP OAuth, automated secret rotation, or production migration orchestration exists yet.
+- Persistence after a Preview PostgreSQL container restart was verified by reading the unique task/report back through the browser and SQL; the test rows were then removed. The Preview deployment tag was matched to the full Git SHA; continuous commit/deployment mapping can be strengthened.
+- Rejection of the Production token by Preview (reverse direction); the Production token was not read. Runtime secret strength/distinctness was compared without printing values; the Worker Base Secret was checked by binding name/type and protected-origin routing.
+- A Production logical snapshot and isolated restore check passed; **no encrypted off-host copy, automated retention plan, or recurring restore rehearsal has been verified**. Automated Preview deployment-to-Git mapping remains open.
+- Cloudflare Zone Rulesets API currently lists no custom or rate-limit ruleset; no WAF/rate-limit change was made. Full user-side cross-browser, physical-device keyboard, and assistive-technology acceptance remain open.

@@ -30,6 +30,8 @@ jobs:
       - run: npm ci
       - name: Check TypeScript, MCP transports, docs, and Worker bundle
         run: npm run check
+      - name: Check non-destructive PostgreSQL maintenance scripts syntax
+        run: bash -n scripts/production-backup.sh scripts/production-restore-check.sh
 
   fastapi:
     name: FastAPI tests and lint

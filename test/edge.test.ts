@@ -10,6 +10,29 @@ const env: EdgeEnv = {
 };
 
 describe("Cloudflare ingress", () => {
+  it("redirects public HTTP requests to HTTPS before serving assets or proxying auth", async () => {
+    const localAssets = { fetch: vi.fn(async () => new Response("index.html")) };
+    const origin = vi.fn();
+    const request = new Request("http://app.example.test/api/tasks?status=done", {
+      headers: { authorization: "Bearer web-user-token" },
+    });
+
+    const response = await proxyGateway(request, { ...env, ASSETS: localAssets }, origin);
+
+    expect(response.status).toBe(308);
+    expect(response.headers.get("location")).toBe("https://app.example.test/api/tasks?status=done");
+    expect(origin).not.toHaveBeenCalled();
+    expect(localAssets.fetch).not.toHaveBeenCalled();
+  });
+
+  it("allows localhost HTTP for local development", async () => {
+    const localAssets = { fetch: vi.fn(async () => new Response("index.html")) };
+    const response = await proxyGateway(new Request("http://localhost:5173/tasks"), { ...env, ASSETS: localAssets });
+
+    expect(response.status).toBe(200);
+    expect(localAssets.fetch).toHaveBeenCalledOnce();
+  });
+
   it("serves application assets without requiring a backend", async () => {
     const response = await proxyGateway(new Request("https://app.example.test/tasks"), env);
     expect(await response.text()).toBe("index.html");

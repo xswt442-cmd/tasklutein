@@ -1,70 +1,51 @@
-<p align="center"><img src="icons/tasklutein-mark-transparent.svg" alt="Tasklutein 标志" width="104" height="104"></p>
-<h1 align="center">Tasklutein</h1>
-<p align="center"><strong>让人和 AI Agent 共用同一份任务与进度</strong></p>
-<p align="center">浏览器里安排任务；MCP Agent 读取、更新状态、提交工作汇报。</p>
-<p align="center">
-  <a href="README.en.md">English</a> ·
-  <a href="docs/development/ARCHITECTURE.zh-CN.md">架构</a> ·
-  <a href="docs/development/DEPLOYMENT.zh-CN.md">部署</a> ·
-  <a href="CHANGELOG.md">更新日志</a>
-</p>
-<p align="center">
-  <a href="https://github.com/xswt442-cmd/tasklutein/actions/workflows/check.yml"><img alt="Check" src="https://github.com/xswt442-cmd/tasklutein/actions/workflows/check.yml/badge.svg?branch=main"></a>
-  <img alt="Development" src="https://img.shields.io/badge/status-development-657483">
-  <img alt="Worker + FastAPI" src="https://img.shields.io/badge/stack-Worker%20%2B%20FastAPI-657483">
-  <a href="LICENSE"><img alt="MIT" src="https://img.shields.io/badge/license-MIT-657483"></a>
-</p>
-
----
-
-> **v0.1.0 开发骨架 · 尚未公开部署**
-> 目前只完成本地代码、测试与部署配置；不是已上线的 SaaS。身份验证暂为**单工作空间、双 Token**，没有多用户、OAuth 或团队权限。
+<div align="center">
+  <img src="icons/tasklutein-mark-transparent.svg" alt="Tasklutein 标志" width="88" height="88">
+  <h1>Tasklutein</h1>
+  <p><strong>让人和 AI Agent 共用同一份任务与进度</strong></p>
+  <p>在浏览器管理任务，让 MCP Agent 查看任务并提交进度汇报。</p>
+  <p>
+    <a href="https://tasklutein.xswt.fyi">打开 Tasklutein</a> ·
+    <a href="README.en.md">English</a> ·
+    <a href="CHANGELOG.md">更新日志</a> ·
+    <a href="LICENSE">MIT License</a>
+  </p>
+</div>
 
 ## 功能
 
-- **任务管理**：新建、查看、编辑、删除任务；支持待办、进行中、完成状态与筛选。
-- **进度汇报**：每个任务可附加多条汇报；后端根据凭据记录来自用户或 Agent。
-- **跨设备 Web**：React 响应式界面，在手机和桌面浏览器打开同一工作空间。
-- **通用 MCP**：五个工具（`list_tasks`、`get_task`、`create_task`、`update_task`、`add_report`）；同时提供本地 stdio 与远程 Streamable HTTP 接口。
+- **任务管理**：创建、编辑和删除任务，按待处理、进行中和已完成筛选。
+- **进度汇报**：为任务添加多条汇报，区分用户与 Agent 来源。
+- **共享工作区**：在手机或桌面浏览器中查看同一组任务和进度。
+- **MCP Agent**：通过 MCP 读取任务、更新状态并提交汇报。
 
-**限制：** Agent 写下的“Done”或工作汇报不等于已经验收。当前无用户级数据隔离、MCP OAuth、任务调度、审计日志、自动部署或生产级限流。远程 MCP 客户端需要能自行设置 Bearer Header。
+## 开始使用
 
-## 架构
+1. 打开 [Tasklutein 工作区](https://tasklutein.xswt.fyi)。
+2. 输入工作区所有者提供的 Web 访问令牌。
+3. 创建任务，填写说明，更新任务状态，并记录进展。
 
-```text
-Browser / Mobile ─┐
-                  ├── Cloudflare Worker (Web Assets + public /api, /mcp)
-Remote MCP Agent ─┘                     │ HTTPS / Tunnel
-                                       ▼
-                       Tencent Docker: Caddy ingress
-                         ├── FastAPI ── PostgreSQL
-                         └── MCP HTTP ── FastAPI
-Local MCP Agent ── stdio adapter ── Worker /api
-```
+Web 令牌仅保存在当前浏览器会话中。重新打开工作区时，可能需要再次输入。
 
-**明确分工：Cloudflare Worker 只负责前端和公网请求入口；腾讯云 Docker 负责业务 API、PostgreSQL 和 MCP Server。** Web 与 MCP 使用同一套 FastAPI 业务逻辑，不需要特定 Agent 客户端或 ligule 才能使用。
+## 连接 MCP Agent
 
-## 本地开发
+将 MCP 客户端连接到 `https://tasklutein.xswt.fyi/mcp`，并配置工作区所有者提供的 Agent 访问令牌。客户端需要支持自定义 `Authorization: Bearer` 请求头。
 
-需要 **Node.js 24+、Python 3.12+、PostgreSQL**；完整环境可使用 Docker Compose。克隆仓库后：
+Agent 可使用以下工具：
 
-```powershell
-npm ci
-python -m venv backend/.venv
-& .\\backend\\.venv\\Scripts\\python.exe -m pip install -r backend/requirements-dev.txt
-npm run check
-& .\\backend\\.venv\\Scripts\\python.exe -m pytest -q
-```
+- `list_tasks`：按状态筛选并列出任务。
+- `get_task`：读取任务及其汇报。
+- `create_task`：创建任务。
+- `update_task`：修改任务标题、说明或状态。
+- `add_report`：为任务添加进度汇报。
 
-先按 [部署/本地联调指南](docs/development/DEPLOYMENT.zh-CN.md) 准备 PostgreSQL、`backend/.env` 及 Token。快速开发时分别启动 FastAPI 与 Vite：
+服务端根据已验证的令牌标记汇报来源。Agent 汇报记录工作活动，不代表结果已经过独立验收。
 
-```powershell
-& .\\backend\\.venv\\Scripts\\python.exe -m uvicorn app.main:app --app-dir backend --env-file backend/.env --reload
-npm run dev
-```
+## 工作区访问范围
 
-打开 `http://localhost:5173`；浏览器的 `/api/*` 在开发模式由 Vite 代理到 FastAPI。完整 Worker 开发和远程 MCP 参见部署文档。**不要**把生产 Token 放进 `VITE_*` 环境变量或 Git。
+Tasklutein 当前使用一个共享工作区。Web 和 Agent 令牌分别签发，但都能访问该工作区的全部任务和汇报；令牌应只提供给受信任的使用者与 Agent。
 
-## 项目文档
+目前不提供独立用户账户、按用户隔离的数据权限或 MCP OAuth 登录。
 
-[架构说明](docs/development/ARCHITECTURE.zh-CN.md) · [API / MCP](docs/development/API.zh-CN.md) · [部署指南](docs/development/DEPLOYMENT.zh-CN.md) · [贡献指南](docs/development/CONTRIBUTING.zh-CN.md) · [维护者发布流程](RELEASE.md) · [Changelog](CHANGELOG.md) · [MIT License](LICENSE)
+## 项目
+
+[更新日志](CHANGELOG.md) · [MIT License](LICENSE)

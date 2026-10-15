@@ -3,11 +3,18 @@
   "name": "tasklutein",
   "main": "./apps/edge/src/index.ts",
   "compatibility_date": "2026-10-14",
+  // Production ORIGIN_URL is managed in Cloudflare; never erase Dashboard vars on deploy.
+  "keep_vars": true,
   "assets": {
     "directory": "./apps/web/dist",
     "binding": "ASSETS",
     "not_found_handling": "single-page-application",
     "run_worker_first": ["/api/*", "/api", "/mcp", "/mcp/*"]
+  },
+  "previews": {
+    "vars": {
+      "ORIGIN_URL": "https://preview-origin-tasklutein.xswt.fyi"
+    }
   },
   "observability": { "enabled": true }
 }
