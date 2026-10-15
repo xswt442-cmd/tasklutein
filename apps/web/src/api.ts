@@ -32,8 +32,21 @@ export async function api<T>(token: string, path: string, options: RequestInit =
     cache: "no-store"
   });
   if (!response.ok) {
-    const json = await response.json().catch(() => ({})) as { detail?: string; error?: string };
-    throw new ApiError(response.status, json.detail ?? json.error ?? "HTTP " + response.status);
+    const json = await response.json().catch(() => ({})) as { detail?: unknown; error?: string };
+    let detail: string | undefined;
+    if (typeof json.detail === "string") {
+      detail = json.detail;
+    } else if (Array.isArray(json.detail)) {
+      detail = json.detail.map((item: unknown) => {
+        if (typeof item === "string") return item;
+        if (!item || typeof item !== "object") return "Request validation failed";
+        const entry = item as { loc?: unknown; msg?: unknown };
+        const path = Array.isArray(entry.loc) ? entry.loc.map(String).join(".") : "";
+        const message = typeof entry.msg === "string" ? entry.msg : "Request validation failed";
+        return path ? `${path}: ${message}` : message;
+      }).join("; ");
+    }
+    throw new ApiError(response.status, detail || json.error || "HTTP " + response.status);
   }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;

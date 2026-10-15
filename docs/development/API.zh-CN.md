@@ -38,7 +38,7 @@ Cloudflare Worker 以私密 `ORIGIN_GATEWAY_TOKEN` 注入 `X-Tasklutein-Gateway`
 
 ## 远程 MCP Streamable HTTP
 
-地址：`https://tasklutein.<domain>/mcp`，由 Worker 路由到腾讯云 Docker 的 Node MCP Server。客户端必须支持自定义请求头 `Authorization: Bearer <AGENT_ACCESS_TOKEN>`，并与 MCP SDK 进行标准初始化握手。当前 HTTP 模式无状态，每个 POST 有独立 MCP Transport，返回 JSON，未实现会话恢复或 OAuth；GET/SSE 非必要，可能返回 `405`。不保证所有只支持 OAuth 或其他传输方式的 Agent 都能直接连接。
+地址：`https://tasklutein.<domain>/mcp`，由 Worker 路由到腾讯云 Docker 的 Node MCP Server。客户端必须支持自定义请求头 `Authorization: Bearer <AGENT_ACCESS_TOKEN>`。锁文件当前解析到 `@modelcontextprotocol/sdk` 1.32.1，最高支持协议版本为 `2025-11-25`（含初始化握手）；不声称兼容 `2026-07-28` 的新传输元数据头与语义。当前 HTTP 模式无状态，每个 POST 有独立 MCP Transport，返回 JSON，单请求体上限 1 MiB；未实现会话恢复或 OAuth。服务端只接受 POST；GET、DELETE 等方法返回 `405`。不保证所有只支持 OAuth 或其他传输方式的 Agent 都能直接连接。
 
 ## MCP 工具与错误
 

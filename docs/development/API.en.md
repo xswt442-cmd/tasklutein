@@ -38,7 +38,7 @@ Body accepts only `{"content":"..."}`. FastAPI stamps report `source` as `user` 
 
 ## Remote MCP Streamable HTTP
 
-URL: `https://tasklutein.<domain>/mcp`, routed by Worker to Node MCP Server on Tencent Docker. Clients must support a custom `Authorization: Bearer <AGENT_ACCESS_TOKEN>` header and the standard MCP SDK handshake. HTTP mode is stateless with a fresh transport per POST and JSON replies; session replay and OAuth are not implemented. GET/SSE is not required and may return `405`. OAuth-only MCP hosts may not be compatible.
+URL: `https://tasklutein.<domain>/mcp`, routed by Worker to the Node MCP Server on Tencent Docker. Clients must support a custom `Authorization: Bearer <AGENT_ACCESS_TOKEN>` header. The lockfile currently resolves `@modelcontextprotocol/sdk` 1.32.1, whose highest supported protocol version is `2025-11-25` (including the initialization handshake); compatibility with the newer `2026-07-28` transport metadata headers and semantics is not claimed. HTTP mode is stateless with a fresh MCP transport per POST and JSON replies; requests are limited to 1 MiB. Session replay and OAuth are not implemented. The server accepts POST only; GET, DELETE, and other methods return `405`. OAuth-only MCP hosts may not be compatible.
 
 ## MCP Tools and Errors
 

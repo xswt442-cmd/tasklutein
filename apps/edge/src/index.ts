@@ -22,6 +22,10 @@ function isGatewayPath(pathname: string): boolean {
     pathname === "/mcp" || pathname === "/mcp/";
 }
 
+function isLocalHostname(hostname: string): boolean {
+  return hostname === "localhost" || hostname === "127.0.0.1";
+}
+
 function isAllowedOrigin(address: string): URL | undefined {
   try {
     const url = new URL(address);
@@ -40,6 +44,10 @@ export async function proxyGateway(
   fetchOrigin: (request: Request, init?: RequestInit) => Promise<Response> = fetch,
 ): Promise<Response> {
   const incoming = new URL(request.url);
+  if (incoming.protocol === "http:" && !isLocalHostname(incoming.hostname)) {
+    incoming.protocol = "https:";
+    return Response.redirect(incoming, 308);
+  }
   if (!isGatewayPath(incoming.pathname)) return env.ASSETS.fetch(request);
 
   if (incoming.pathname !== "/api/health" &&
