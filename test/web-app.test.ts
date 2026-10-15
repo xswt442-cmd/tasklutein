@@ -225,12 +225,15 @@ describe("Tasklutein workspace UI", () => {
     expect(attempts).toBe(2);
   });
 
-  it("shows backend unavailability and recovers the connection state on refresh", async () => {
+  it.each([
+    { status: 502, message: "后端暂时无法连接，请稍后重试。" },
+    { status: 503, message: "服务暂时不可用，请稍后重试。" },
+  ])("shows backend unavailability for HTTP $status and recovers on refresh", async ({ status, message }) => {
     let taskReads = 0;
     apiMock.mockImplementation(async (_token, path, request) => {
       if (path === "/tasks" && request?.method !== "PATCH") {
         taskReads += 1;
-        if (taskReads === 2) throw new ApiError(503, "origin_unavailable");
+        if (taskReads === 2) throw new ApiError(status, "origin_unavailable");
         return { tasks: [{ ...baseTask }] } as never;
       }
       if (path === "/tasks/task-1/reports") return { reports: [] } as never;
@@ -241,7 +244,7 @@ describe("Tasklutein workspace UI", () => {
     fireEvent.click(screen.getByRole("button", { name: "进入工作空间" }));
 
     await screen.findByText("连接暂不可用");
-    expect(screen.getByRole("alert").textContent).toBe("服务暂时不可用，请稍后重试。");
+    expect(screen.getByRole("alert").textContent).toBe(message);
     expect(sessionStorage.getItem("tasklutein_token")).toBe("local-web-token");
 
     fireEvent.click(screen.getByRole("button", { name: "刷新任务" }));
@@ -272,5 +275,32 @@ describe("Tasklutein workspace UI", () => {
 
     expect((await screen.findByRole("alert")).textContent).toBe("网络连接失败，请检查网络后重试。");
     expect(sessionStorage.getItem("tasklutein_token")).toBeNull();
+  });
+
+  it("prevents duplicate report requests while the first submission is pending", async () => {
+    let resolvePost: ((value: { report: Report }) => void) | undefined;
+    let attempts = 0;
+    const pendingPost = new Promise<{ report: Report }>((resolve) => { resolvePost = resolve; });
+    apiMock.mockImplementation(async (_token, path, request) => {
+      if (path === "/tasks") return { tasks: [{ ...baseTask }] } as never;
+      if (path === "/tasks/task-1/reports" && request?.method === "POST") {
+        attempts += 1;
+        return pendingPost as never;
+      }
+      if (path === "/tasks/task-1/reports") return { reports: [] } as never;
+      throw new Error(`Unexpected API call: ${request?.method ?? "GET"} ${path}`);
+    });
+    await enterWorkspace();
+
+    fireEvent.change(screen.getByPlaceholderText("记录实际完成的工作、测试和结果…"), { target: { value: "one report" } });
+    const submit = screen.getByRole("button", { name: "添加汇报" });
+    fireEvent.click(submit);
+    expect(submit.hasAttribute("disabled")).toBe(true);
+    fireEvent.click(submit);
+    expect(attempts).toBe(1);
+
+    resolvePost?.({ report: { id: "report-once", task_id: "task-1", content: "one report", source: "user", created_at: "2026-10-15T01:00:00Z" } });
+    await screen.findByText("汇报已保存");
+    expect(attempts).toBe(1);
   });
 });

@@ -16,6 +16,7 @@ __pycache__/
 .ruff_cache/
 .coverage
 *.py[cod]
+*.egg-info/
 
 # Runtime settings and secrets
 .env
