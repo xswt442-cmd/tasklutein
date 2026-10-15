@@ -18,7 +18,7 @@
 ---
 
 > **v0.1.0 开发骨架 · Production 与独立 Preview 已存在**
-> 公开环境的当前状态与实际验收边界见[部署文档](docs/development/DEPLOYMENT.zh-CN.md)。Preview 已通过一次带清理的认证 API/MCP/PostgreSQL 闭环（任务、用户/Agent 汇报、SQL 行核对和跨请求读回）。真实浏览器测试创建任务和改状态成功，但在线汇报请求曾因旧 Web 构建多发 `source` 而被 API 拒绝；本地修复尚未部署，需更新后复验。服务重启持久性和生产写入仍未验收。身份验证暂为**单工作空间、双 Token**，没有多用户、OAuth 或团队权限。
+> 公开环境的当前状态与实际验收边界见[部署文档](docs/development/DEPLOYMENT.zh-CN.md)。Preview Worker #5 已部署 `dev` 提交 `b9bcd839`。真实 HTTPS 浏览器、Web API、远程 MCP 与 Preview PostgreSQL 闭环通过：Web 创建任务和用户汇报，MCP 查到同一任务并写入 Agent 汇报，浏览器刷新与 SQL 均读回两种来源；随后删除并核实测试数据已清理。API/DB 服务重启持久性、生产写入和备份恢复仍未验收。身份验证暂为**单工作空间、双 Token**，没有多用户、OAuth 或团队权限。
 
 ## 功能
 
@@ -27,7 +27,7 @@
 - **跨设备 Web**：React 响应式界面，在手机和桌面浏览器打开同一工作空间。
 - **通用 MCP**：五个工具（`list_tasks`、`get_task`、`create_task`、`update_task`、`add_report`）；同时提供本地 stdio 与远程 Streamable HTTP 接口。
 
-**限制：** Agent 写下的“Done”或工作汇报不等于已经验收。当前无用户级数据隔离、MCP OAuth、任务调度、审计日志、自动部署或生产级限流。远程 MCP 客户端需要能自行设置 Bearer Header。远程 MCP SDK 最高协议版本为 `2025-11-25`；当前 Preview Worker 精确 Git SHA 尚未确认。
+**限制：** Agent 写下的“Done”或工作汇报不等于已经验收。当前无用户级数据隔离、MCP OAuth、任务调度、审计日志、自动部署或生产级限流。远程 MCP 客户端需要能自行设置 Bearer Header。远程 MCP SDK 最高协议版本为 `2025-11-25`；当前 Preview Worker 部署 tag 与 Git SHA 已核对，自动部署映射仍未实现。
 
 ## 架构
 

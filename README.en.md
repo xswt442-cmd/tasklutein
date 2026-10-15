@@ -18,7 +18,7 @@
 ---
 
 > **v0.1.0 development scaffold · Production and an isolated Preview exist**
-> See the [deployment guide](docs/development/DEPLOYMENT.en.md) for live status and evidence boundaries. One authenticated Preview API/MCP/PostgreSQL flow has passed with cleanup (task lifecycle, human/agent reports, SQL row verification, and read-after-write). A real browser run created a task and changed its status, but the deployed report request sent a client-controlled `source` and was rejected; the local fix is not deployed and must be retested after an authorized update. Persistence after service restart and Production writes remain unverified. Authentication is currently **one shared workspace with two tokens**, not user accounts, OAuth, or team permissions.
+> See the [deployment guide](docs/development/DEPLOYMENT.en.md) for live status and evidence boundaries. Preview Worker deployment #5 serves commit `b9bcd839` from `dev`. The real HTTPS browser, Web API, remote MCP, and Preview PostgreSQL flow passed: Web created a task and user report, MCP found that task and added an Agent report, browser refresh and SQL read back both sources, then the test rows were deleted and verified absent. Persistence across API/DB restarts, Production writes, and backup recovery remain unverified. Authentication is currently **one shared workspace with two tokens**, not user accounts, OAuth, or team permissions.
 
 ## Features
 
@@ -27,7 +27,7 @@
 - **Responsive Web:** React dashboard for mobile and desktop browsers sharing the same workspace.
 - **Standard MCP:** five tools (`list_tasks`, `get_task`, `create_task`, `update_task`, `add_report`), offered through both local stdio and remote Streamable HTTP.
 
-**Limitations:** Agent-authored completion reports are not proof of verification. User-level isolation, MCP OAuth, scheduling, audit trails, automatic infrastructure deployment, and production rate limiting are not implemented. Remote MCP clients need custom Bearer-header support. The remote MCP SDK supports protocol versions through `2025-11-25`; the exact Git SHA for the current Preview Worker is unconfirmed.
+**Limitations:** Agent-authored completion reports are not proof of verification. User-level isolation, MCP OAuth, scheduling, audit trails, automatic infrastructure deployment, and production rate limiting are not implemented. Remote MCP clients need custom Bearer-header support. The remote MCP SDK supports protocol versions through `2025-11-25`; the current Preview Worker deployment tag matches its Git SHA, but automatic deployment mapping is not implemented.
 
 ## Architecture
 
