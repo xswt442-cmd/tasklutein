@@ -9,15 +9,17 @@
 | 环境 | Web / Worker | 源站 | 腾讯云 Compose / Git | 数据库 |
 | --- | --- | --- | --- | --- |
 | Production | `https://tasklutein.xswt.fyi`；Worker `tasklutein` | `https://origin-tasklutein.xswt.fyi` | `/home/xswt/apps/tasklutein`；`main` / `4b4d6e6`；Compose 项目 `deploy`，5 个容器运行 | PostgreSQL 健康；卷 `deploy_tasklutein_db` |
-| Preview | `https://dev.preview.tasklutein.xswt.fyi`；Worker Preview 名称 `dev` | `https://preview-origin-tasklutein.xswt.fyi` | `/home/xswt/apps/tasklutein-preview`；`dev` / `b9bcd83`；Compose 项目 `tasklutein-preview`，4 个容器运行；Tunnel 使用独立项目 | PostgreSQL 健康；卷 `tasklutein-preview_tasklutein_db` |
+| Preview | `https://dev.preview.tasklutein.xswt.fyi`；Worker Preview 名称 `dev` | `https://preview-origin-tasklutein.xswt.fyi` | Worker tag `e1aa382`；VPS API/MCP checkout `dev` / `b9bcd83`；Compose 项目 `tasklutein-preview`，4 个容器运行；Tunnel 使用独立项目 | PostgreSQL 健康；卷 `tasklutein-preview_tasklutein_db` |
 
-两套应用使用独立 Docker 网络、数据库卷和 Tunnel；Host 端口只绑定 `127.0.0.1`。Cloudflare Workers Preview API 列出的 `dev` 最新部署为 #5（`bb47be2b-1151-4bd5-9e87-106e1cb38339`，immutable URL：`https://bb47be2b.preview.tasklutein.xswt.fyi`），部署 tag 是完整提交 SHA `b9bcd8395f2c9c4dcca7143afc92eb412d1daee4`。稳定 Preview URL 与 immutable URL 均提供新 Web bundle；health 为 200、匿名任务 API 为 401。部署含 `ORIGIN_URL=https://preview-origin-tasklutein.xswt.fyi` 与 `ORIGIN_GATEWAY_TOKEN` secret binding（只核对名称/类型，未读取值）。Wrangler 的 Production deployment #5 是独立记录，没有被本轮更新。
+两套应用使用独立 Docker 网络、数据库卷和 Tunnel；Host 端口只绑定 `127.0.0.1`。Cloudflare Workers Preview API 列出的 `dev` 最新部署为 #6（`edb4957f-ed72-4f5c-9200-22b571da642f`，immutable URL：`https://edb4957f.preview.tasklutein.xswt.fyi`），部署 tag 是完整提交 SHA `e1aa3822054e9fde2c41d3cc5af1935ff7eda721`。稳定 Preview URL 和 immutable URL 均提供新 Web bundle `/assets/index-Q95TUzoz.js`；health 为 200、匿名任务 API 为 401。部署含 `ORIGIN_URL=https://preview-origin-tasklutein.xswt.fyi` 与 `ORIGIN_GATEWAY_TOKEN` secret binding（只核对名称/类型，未读取值）。Production Worker 仍是独立 deployment #5，本轮未更新。
 
 经 Owner 明确授权，已将 `xswt.fyi` zone 的 `always_use_https` 从 `off` 改为 `on`；SSL 模式为 `Full`。只读 HEAD 检查覆盖 Cloudflare 返回的 9 条 DNS 记录主机名（含 `dev.preview.tasklutein.xswt.fyi`）：全部 HTTP 请求返回 301 或 308，HTTPS 均可建立连接；Tasklutein Production/Preview `/api/health` 为 200，两个源站 health 仍为 403。唯一 DNS-only 主机返回其自身 308。Worker 的非本地 HTTP→HTTPS 308 兜底也已随 Preview #5 部署。
 
-基础公网检查：Preview `/api/health` 为 200，匿名 `/api/tasks` 和 `/mcp` 为 401；Preview API/MCP 源站直接匿名访问为 403。Production `/api/health` 为 200，Production API 源站直接匿名访问为 403。真实 HTTPS 浏览器创建了唯一 `[smoke-test]` 任务并提交 `source=user` 汇报；远程 MCP `list_tasks` 找到同一任务并成功提交 `source=agent` 汇报。浏览器刷新显示任务和两条不同来源报告；Web API 均返回 200，Preview PostgreSQL SQL 读到同一任务及两条报告。重启 Preview `api` 和 `mcp` 容器后，MCP、SQL 和浏览器刷新仍读回同一数据；数据库容器未重启。随后通过 UI 删除任务，SQL 确认任务/报告行均为 0。Preview #5 已部署汇报 payload 修复；`npm run smoke:preview` 的 health / 匿名拒绝 / 源站拒绝检查通过。Preview Web Token 请求 Production 一个不存在的任务 ID，Production API 返回 401；未读取或写入 Production 任务数据。Production 应用与自定义站点域名未修改；按 Owner 授权启用了 zone 级 HTTPS。未读取 Production Token；备份恢复也未验证。
+基础公网检查：Preview `/api/health` 为 200，匿名 `/api/tasks` 和 `/mcp` 为 401；Preview API/MCP 源站直接匿名访问为 403。Production `/api/health` 为 200，Production API 源站直接匿名访问为 403。真实 HTTPS 浏览器创建了唯一 `[smoke-test]` 任务并提交 `source=user` 汇报；远程 MCP `list_tasks` 找到同一任务并成功提交 `source=agent` 汇报。浏览器刷新显示任务和两条不同来源报告；Web API 均返回 200，Preview PostgreSQL SQL 读到同一任务及两条报告。重启 Preview `api` 和 `mcp` 容器后，MCP、SQL 和浏览器刷新仍读回同一数据；数据库容器未重启。随后通过 UI 删除任务，SQL 确认任务/报告行均为 0。Preview Worker #6 部署连接状态反馈修复；Playwright 在真实 Preview 的 360/390/430px 视宽检查无横向溢出，按钮最小高度为 44px，状态显示“已连接”。`npm run smoke:preview` 5 项通过。服务器内存配置比较确认 Web、Agent、Gateway、Tunnel 四类运行时 Secret 达到长度/强度要求、同环境内两两不同、跨环境对应项不同；API/MCP 的 Agent/Gateway 配置相符，未输出 Secret 值。Preview Web Token 请求 Production 一个不存在的任务 ID 得到 401，没有读取或写入 Production 任务数据。数据库容器重启、备份恢复和 Production Token 对 Preview 的反向拒绝仍未验；Production Worker、应用与自定义站点域名未修改；zone 级 HTTPS 按 Owner 授权开启。
 
 ## 数据流与边界
+
+Playwright 对真实 Preview 页面临时拦截一次 `/api/tasks` 并返回 503（未改服务器），页面显示“连接暂不可用”和重试提示；解除拦截后重载恢复“已连接”。窄屏检查测了 360/390/430px，未发现横向溢出，按钮最小高度为 44px；这不替代真实手机键盘和人工无障碍验收。
 
 浏览器与 MCP 客户端统一访问 Cloudflare Worker。Worker 将 API/MCP 请求通过 Cloudflare Tunnel 转给腾讯云 Caddy，再由 FastAPI / Node MCP 访问 PostgreSQL。
 
@@ -54,6 +56,6 @@ docker compose -f deploy/compose.yml --env-file deploy/.env.preview.example conf
 ## 尚未验收
 
 - 数据库容器本身重启后的持久性尚未实测；本轮重启 Preview API/MCP 容器后，跨请求和 PostgreSQL 数据仍可读。Preview Worker tag 与完整 Git SHA 已核对；持续自动化的提交/部署映射仍可加强。
-- Preview / Production Token 交叉拒绝及密钥独立性；只核对了 Compose/volume/network 拓扑，没有读取 Secret 值。
+- Production Token 对 Preview 的反向交叉拒绝；没有读取 Production Token。API/Agent/Gateway/Tunnel 运行时 Secret 的强度、唯一性和环境差异已只输出布尔值核对；Worker Base Secret 只核对 binding 名称/类型及受保护回源结果。
 - 生产备份存在性与恢复演练；Preview Worker 构建自动化与 Git commit 的持续对应关系。
 - Cloudflare WAF/限流配置以及用户侧跨浏览器、键盘弹出、完整无障碍验收。

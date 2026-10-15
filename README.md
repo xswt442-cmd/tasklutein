@@ -18,7 +18,7 @@
 ---
 
 > **v0.1.0 开发骨架 · Production 与独立 Preview 已存在**
-> 公开环境的当前状态与实际验收边界见[部署文档](docs/development/DEPLOYMENT.zh-CN.md)。Preview Worker #5 已部署 `dev` 提交 `b9bcd839`。真实 HTTPS 浏览器、Web API、远程 MCP 与 Preview PostgreSQL 闭环通过：Web 创建任务和用户汇报，MCP 查到同一任务并写入 Agent 汇报，浏览器刷新与 SQL 均读回两种来源；API/MCP 容器重启后仍可读回；随后删除并核实测试数据已清理。Preview Token 请求 Production API 被拒绝（401）。数据库容器重启、生产写入和备份恢复仍未验收。身份验证暂为**单工作空间、双 Token**，没有多用户、OAuth 或团队权限。
+> 公开环境的当前状态与实际验收边界见[部署文档](docs/development/DEPLOYMENT.zh-CN.md)。Preview Worker #6 已部署 `dev` 提交 `e1aa382`。真实 HTTPS 浏览器、Web API、远程 MCP 与 Preview PostgreSQL 闭环通过：Web 创建任务和用户汇报，MCP 查到同一任务并写入 Agent 汇报，浏览器刷新与 SQL 均读回两种来源；API/MCP 容器重启后仍可读回；随后删除并核实测试数据已清理。Preview Token 请求 Production API 被拒绝（401）。浏览器现在会反映连接异常与令牌失效；数据库容器重启、生产写入和备份恢复仍未验收。身份验证暂为**单工作空间、双 Token**，没有多用户、OAuth 或团队权限。
 
 ## 功能
 
