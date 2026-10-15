@@ -5,6 +5,10 @@ Changes are recorded in a format inspired by [Keep a Changelog](https://keepacha
 
 ## [Unreleased] / 未发布
 
+当前暂无新增变更。 / No pending changes.
+
+## [0.1.0] - 2026-10-15 / 首次发布
+
 ### 简体中文
 
 **新增**
@@ -23,7 +27,7 @@ Changes are recorded in a format inspired by [Keep a Changelog](https://keepacha
 - 新增 PostgreSQL 生产逻辑备份与断网临时容器恢复验收脚本；首次受限权限备份和恢复演练已通过，异机容灾仍待建设。
 
 **已知限制**
-- Preview Worker #7 已部署 `dev` 提交 `e314080`。HTTPS 浏览器、Web API、远程 MCP 与 Preview PostgreSQL 完整闭环已通过；API/MCP 容器重启测试和单独的 PostgreSQL 容器重启测试均能读回数据，测试记录已删除并核实。Preview Token 请求 Production API 得到 401。Production 备份恢复和反向 Token 检查尚未确认。Production 应用与自定义站点域名未修改；`xswt.fyi` zone 级 HTTPS 设置按 Owner 授权启用。
+- Preview Worker #7 已部署 `dev` 提交 `e314080`。HTTPS 浏览器、Web API、远程 MCP 与 Preview PostgreSQL 完整闭环已通过；API/MCP 容器重启测试和单独的 PostgreSQL 容器重启测试均能读回数据，测试记录已删除并核实。Preview Token 请求 Production API 得到 401。生产 PostgreSQL 已完成受限逻辑备份与断网临时容器恢复演练（仍非异机容灾）；反向 Token 验证尚未完成。Production 应用与自定义站点域名在当轮 Preview 验收时未修改；`xswt.fyi` zone 级 HTTPS 设置按 Owner 授权启用。
 - 只有一个共享工作空间；没有多用户登录、RBAC、MCP OAuth、生产限流和自动数据库迁移。
 
 ### English
@@ -44,5 +48,5 @@ Changes are recorded in a format inspired by [Keep a Changelog](https://keepacha
 - Added guarded Production PostgreSQL logical-backup and network-isolated, ephemeral-restore verification scripts; the first on-host snapshot and rehearsal passed, while off-host recovery remains pending.
 
 **Known limitations**
-- Preview Worker deployment #7 serves commit `e314080` from `dev`. The HTTPS browser, Web API, remote MCP, and Preview PostgreSQL flow passed end to end; separate API/MCP and PostgreSQL restart checks read the test records back before they were deleted and verified absent. A Preview token was rejected by the Production API with 401. The Web app reports connection, expired-token, backend, and network states, and its task/report fields and status filters expose accessible names and selected state. Production backup/restore and reverse token rejection remain unverified. The Production app and custom site domain were not changed; zone-level HTTPS for `xswt.fyi` was enabled with Owner authorization.
+- Preview Worker deployment #7 serves commit `e314080` from `dev`. The HTTPS browser, Web API, remote MCP, and Preview PostgreSQL flow passed end to end; separate API/MCP and PostgreSQL restart checks read the test records back before they were deleted and verified absent. A Preview token was rejected by the Production API with 401. The Web app reports connection, expired-token, backend, and network states, and its task/report fields and status filters expose accessible names and selected state. The protected Production PostgreSQL logical backup and network-isolated restore rehearsal have passed (without off-host disaster recovery); reverse token rejection remains unverified. Production app and domain were not changed during the Preview validation; zone-level HTTPS for `xswt.fyi` was enabled with Owner authorization.
 - One shared workspace only; no user accounts, RBAC, MCP OAuth, production rate limits, or automated database migrations.

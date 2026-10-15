@@ -1,0 +1,78 @@
+name: Deploy Production Worker
+
+# Manual and separately authorized. Never deploy on merge or tag automatically.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  deployments: write
+
+concurrency:
+  group: deploy-tasklutein-production
+  cancel-in-progress: false
+
+jobs:
+  production:
+    name: Build, deploy and verify Cloudflare Worker
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment:
+      name: production
+      url: https://tasklutein.xswt.fyi
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - name: Verify source before deployment
+        run: npm run check
+      - name: Check required GitHub Cloudflare credentials
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN" || { echo "Configure production environment secret CLOUDFLARE_API_TOKEN"; exit 1; }
+          test -n "$CLOUDFLARE_ACCOUNT_ID" || { echo "Configure production environment variable CLOUDFLARE_ACCOUNT_ID"; exit 1; }
+      - name: Deploy Worker and static assets (preserve dashboard variables)
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          npx wrangler deploy --keep-vars
+      - name: Verify Production Worker runtime bindings and public boundary
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          settings="$(curl --fail --silent --show-error --retry 3 \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/tasklutein/settings")"
+          jq -e '
+            .success == true and
+            ([.result.bindings[] | select(.name == "ORIGIN_URL" and .type == "plain_text"
+              and .text == "https://origin-tasklutein.xswt.fyi")] | length) == 1 and
+            ([.result.bindings[] | select(.name == "ORIGIN_GATEWAY_TOKEN" and
+              .type == "secret_text")] | length) == 1
+          ' <<< "$settings" >/dev/null
+          probe() {
+            local url="$1" expected="$2" status
+            status="$(curl -sS --retry 3 --retry-delay 2 --max-time 25 -o /dev/null -w '%{http_code}' "$url")"
+            echo "$url: HTTP $status (expected $expected)"
+            test "$status" = "$expected"
+          }
+          probe 'https://tasklutein.xswt.fyi/api/health' 200
+          probe 'https://tasklutein.xswt.fyi/api/tasks' 401
+          probe 'https://origin-tasklutein.xswt.fyi/api/health' 403
+          echo "Production Worker verified; Tencent Docker was not modified."

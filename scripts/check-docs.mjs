@@ -18,6 +18,7 @@ const required = [
   ".github/release-notes/TEMPLATE.md",
   ".github/workflows/check.yml",
   ".github/workflows/release.yml",
+  ".github/workflows/deploy.yml",
 ];
 
 let failures = 0;
