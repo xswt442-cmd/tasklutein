@@ -224,4 +224,53 @@ describe("Tasklutein workspace UI", () => {
     expect(screen.getByText((_content, element) => element?.tagName === "P" && element.textContent === "Factual report\nsecond line")).toBeTruthy();
     expect(attempts).toBe(2);
   });
+
+  it("shows backend unavailability and recovers the connection state on refresh", async () => {
+    let taskReads = 0;
+    apiMock.mockImplementation(async (_token, path, request) => {
+      if (path === "/tasks" && request?.method !== "PATCH") {
+        taskReads += 1;
+        if (taskReads === 2) throw new ApiError(503, "origin_unavailable");
+        return { tasks: [{ ...baseTask }] } as never;
+      }
+      if (path === "/tasks/task-1/reports") return { reports: [] } as never;
+      throw new Error(`Unexpected API call: ${request?.method ?? "GET"} ${path}`);
+    });
+    render(createElement(App));
+    fireEvent.change(screen.getByLabelText("工作空间访问令牌"), { target: { value: "local-web-token" } });
+    fireEvent.click(screen.getByRole("button", { name: "进入工作空间" }));
+
+    await screen.findByText("连接暂不可用");
+    expect(screen.getByRole("alert").textContent).toBe("服务暂时不可用，请稍后重试。");
+    expect(sessionStorage.getItem("tasklutein_token")).toBe("local-web-token");
+
+    fireEvent.click(screen.getByRole("button", { name: "刷新任务" }));
+    await screen.findByText("已连接");
+    await screen.findByRole("heading", { name: baseTask.title });
+  });
+
+  it("clears an expired session when a report read returns 401", async () => {
+    apiMock.mockImplementation(async (_token, path) => {
+      if (path === "/tasks") return { tasks: [{ ...baseTask }] } as never;
+      if (path === "/tasks/task-1/reports") throw new ApiError(401, "unauthorized");
+      throw new Error(`Unexpected API call: GET ${path}`);
+    });
+    render(createElement(App));
+    fireEvent.change(screen.getByLabelText("工作空间访问令牌"), { target: { value: "local-web-token" } });
+    fireEvent.click(screen.getByRole("button", { name: "进入工作空间" }));
+
+    await waitFor(() => expect(sessionStorage.getItem("tasklutein_token")).toBeNull());
+    expect(await screen.findByLabelText("工作空间访问令牌")).toBeTruthy();
+    expect(screen.getByRole("alert").textContent).toBe("访问令牌无效或已失效，请重新输入。");
+  });
+
+  it("explains a network failure on sign-in without storing the token", async () => {
+    apiMock.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    render(createElement(App));
+    fireEvent.change(screen.getByLabelText("工作空间访问令牌"), { target: { value: "local-web-token" } });
+    fireEvent.click(screen.getByRole("button", { name: "进入工作空间" }));
+
+    expect((await screen.findByRole("alert")).textContent).toBe("网络连接失败，请检查网络后重试。");
+    expect(sessionStorage.getItem("tasklutein_token")).toBeNull();
+  });
 });

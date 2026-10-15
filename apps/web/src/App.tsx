@@ -8,6 +8,20 @@ const labels: Record<TaskStatus, string> = { todo: "待处理", in_progress: "�
 const statuses: TaskStatus[] = ["todo", "in_progress", "done"];
 const formatDate = (iso: string) => new Date(iso).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
 
+function describeRequestError(error: unknown, fallback: string): string {
+  if (error instanceof ApiError) {
+    if (error.status === 401) return "访问令牌无效或已失效，请重新输入。";
+    if (error.status === 502) return "后端暂时无法连接，请稍后重试。";
+    if (error.status === 503 || error.status >= 500) return "服务暂时不可用，请稍后重试。";
+  }
+  if (error instanceof TypeError) return "网络连接失败，请检查网络后重试。";
+  return error instanceof Error ? error.message : fallback;
+}
+
+function isServiceUnavailable(error: unknown): boolean {
+  return error instanceof TypeError || error instanceof ApiError && error.status >= 500;
+}
+
 export default function App() {
   const [token, setToken] = useState(() => sessionStorage.getItem("tasklutein_token") ?? "");
   const [draftToken, setDraftToken] = useState("");
@@ -22,6 +36,7 @@ export default function App() {
   const [reportContent, setReportContent] = useState("");
   const [filter, setFilter] = useState<"all" | TaskStatus>("all");
   const [reportsReloadKey, setReportsReloadKey] = useState(0);
+  const [connectionStatus, setConnectionStatus] = useState<"checking" | "connected" | "unavailable">("checking");
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -32,19 +47,34 @@ export default function App() {
   const visible = tasks.filter((task) => filter === "all" || task.status === filter);
   const counts = Object.fromEntries(statuses.map((status) => [status, tasks.filter((task) => task.status === status).length])) as Record<TaskStatus, number>;
 
+  function invalidateSession() {
+    sessionStorage.removeItem("tasklutein_token");
+    setToken("");
+    setDraftToken("");
+    setTasks([]);
+    setReports([]);
+    setSelectedId(null);
+    setEditingTaskId(null);
+    setEditTitle("");
+    setEditDescription("");
+  }
+
   async function loadTasks(currentToken: string) {
     setLoading(true);
+    setConnectionStatus("checking");
     try {
       const result = await api<{ tasks: Task[] }>(currentToken, "/tasks");
       setTasks(result.tasks);
       setSelectedId((id) => id && result.tasks.some((task) => task.id === id) ? id : result.tasks[0]?.id ?? null);
       setEditingTaskId((id) => id && result.tasks.some((task) => task.id === id) ? id : null);
+      setConnectionStatus("connected");
       setError("");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "无法加载任务");
+      setError(describeRequestError(err, "无法加载任务"));
       if (err instanceof ApiError && err.status === 401) {
-        sessionStorage.removeItem("tasklutein_token");
-        setToken("");
+        invalidateSession();
+      } else if (isServiceUnavailable(err)) {
+        setConnectionStatus("unavailable");
       }
     } finally {
       setLoading(false);
@@ -62,8 +92,18 @@ export default function App() {
     }
     let active = true;
     void api<{ reports: Report[] }>(token, "/tasks/" + selectedId + "/reports")
-      .then((result) => { if (active) setReports(result.reports); })
-      .catch((err: unknown) => { if (active) setError(err instanceof Error ? err.message : "读取汇报失败"); });
+      .then((result) => {
+        if (active) {
+          setReports(result.reports);
+          setConnectionStatus("connected");
+        }
+      })
+      .catch((err: unknown) => {
+        if (!active) return;
+        setError(describeRequestError(err, "读取汇报失败"));
+        if (err instanceof ApiError && err.status === 401) invalidateSession();
+        else if (isServiceUnavailable(err)) setConnectionStatus("unavailable");
+      });
     return () => { active = false; };
   }, [token, selectedId, reportsReloadKey]);
 
@@ -82,7 +122,7 @@ export default function App() {
       setToken(draftToken.trim());
       setDraftToken("");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "连接失败");
+      setError(describeRequestError(err, "连接失败"));
     } finally {
       setBusy(false);
     }
@@ -90,14 +130,8 @@ export default function App() {
 
   function signOut() {
     if (busy || editingTaskId !== null) return;
-    sessionStorage.removeItem("tasklutein_token");
-    setToken("");
-    setTasks([]);
-    setReports([]);
-    setSelectedId(null);
-    setEditingTaskId(null);
-    setEditTitle("");
-    setEditDescription("");
+    invalidateSession();
+    setConnectionStatus("checking");
     setMessage("");
     setError("");
   }
@@ -106,8 +140,13 @@ export default function App() {
     setBusy(true);
     setError("");
     setMessage("");
-    try { await task(); } catch (err) {
-      setError(err instanceof Error ? err.message : "操作失败");
+    try {
+      await task();
+      setConnectionStatus("connected");
+    } catch (err) {
+      setError(describeRequestError(err, "操作失败"));
+      if (err instanceof ApiError && err.status === 401) invalidateSession();
+      else if (isServiceUnavailable(err)) setConnectionStatus("unavailable");
     } finally { setBusy(false); }
   }
 
@@ -198,6 +237,13 @@ export default function App() {
     </main>;
   }
 
+  const connectionLabel = connectionStatus === "connected" ? "已连接" : connectionStatus === "unavailable" ? "连接暂不可用" : "连接中";
+  const connectionClass = connectionStatus === "connected"
+    ? "border-[#d6e3d2] bg-[#edf6e8] text-[#386945]"
+    : connectionStatus === "unavailable"
+      ? "border-red-200 bg-red-50 text-red-700"
+      : "border-[#d6e3d2] bg-white text-[#56655a]";
+
   return <div className="min-h-screen bg-[#f5f7f0] text-[#18382a]">
     <header className="bg-white border-b border-[#e2e8dd] sticky top-0 z-10">
       <div className="max-w-6xl mx-auto px-4 sm:px-8 py-4 flex items-center justify-between gap-3">
@@ -214,7 +260,10 @@ export default function App() {
     <main className="max-w-6xl mx-auto px-4 sm:px-8 py-8">
       <div className="flex flex-wrap items-start justify-between gap-4 mb-7">
         <div><p className="text-sm text-emerald-700 font-medium">WORKSPACE</p><h2 className="text-3xl font-bold mt-1">任务与汇报</h2><p className="text-[#56655a] mt-2">你和已授权的 Agent 看到的是同一份数据。</p></div>
-        <span className="inline-flex items-center gap-2 rounded-full border border-[#d6e3d2] bg-[#edf6e8] px-3 py-2 text-sm text-[#386945]"><CheckCircle2 size={15} /> Connected</span>
+        <span role="status" aria-live="polite" className={`inline-flex items-center gap-2 rounded-full border px-3 py-2 text-sm ${connectionClass}`}>
+          {connectionStatus === "connected" ? <CheckCircle2 size={15} /> : connectionStatus === "checking" ? <RefreshCw size={15} /> : <Circle size={15} />}
+          {connectionLabel}
+        </span>
       </div>
       <div className="grid grid-cols-3 gap-3 mb-6">
         {statuses.map((status) => <div key={status} className="rounded-2xl bg-white border border-[#e2e8dd] p-4"><p className="text-xs sm:text-sm text-[#56655a]">{labels[status]}</p><p className="text-3xl font-bold mt-1">{counts[status]}</p></div>)}
