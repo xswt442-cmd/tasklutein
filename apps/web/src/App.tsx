@@ -277,12 +277,12 @@ export default function App() {
             <span className="text-xs text-[#56655a]">{tasks.length} tasks</span>
           </div>
           <form onSubmit={(event) => void createTask(event)} className="space-y-3 p-4 rounded-xl bg-[#f6f9f3] border border-[#e6ece3] mb-5">
-            <input className="input" value={title} maxLength={120} onChange={(event) => setTitle(event.target.value)} placeholder="添加一个新任务…" required disabled={busy || editingTaskId !== null} />
-            <textarea className="input min-h-[70px] resize-y" value={description} maxLength={4000} onChange={(event) => setDescription(event.target.value)} placeholder="可选：任务说明" disabled={busy || editingTaskId !== null} />
+            <input className="input" aria-label="新任务标题" value={title} maxLength={120} onChange={(event) => setTitle(event.target.value)} placeholder="添加一个新任务…" required disabled={busy || editingTaskId !== null} />
+            <textarea className="input min-h-[70px] resize-y" aria-label="新任务说明" value={description} maxLength={4000} onChange={(event) => setDescription(event.target.value)} placeholder="可选：任务说明" disabled={busy || editingTaskId !== null} />
             <button type="submit" className="primary-btn" disabled={busy || editingTaskId !== null || !title.trim()}><Plus size={17} /> 创建任务</button>
           </form>
-          <div className="flex flex-wrap gap-2 mb-4">
-            {(["all", ...statuses] as const).map((status) => <button key={status} type="button" onClick={() => setFilter(status)} className={filter === status ? "filter active" : "filter"} disabled={editingTaskId !== null}>{status === "all" ? "全部" : labels[status]}</button>)}
+          <div role="group" aria-label="按任务状态筛选" className="flex flex-wrap gap-2 mb-4">
+            {(["all", ...statuses] as const).map((status) => <button key={status} type="button" aria-pressed={filter === status} onClick={() => setFilter(status)} className={filter === status ? "filter active" : "filter"} disabled={editingTaskId !== null}>{status === "all" ? "全部" : labels[status]}</button>)}
           </div>
           <div className="space-y-2">
             {visible.map((task) => <button key={task.id} type="button" onClick={() => setSelectedId(task.id)} className={"text-left task-row " + (selectedId === task.id ? "selected" : "")} disabled={busy || editingTaskId !== null}>
@@ -325,7 +325,7 @@ export default function App() {
             <div className="border-t border-[#e9eee6] pt-5">
               <h4 className="font-bold mb-4">工作汇报 <span className="text-[#56655a] font-normal text-sm">({reports.length})</span></h4>
               <form onSubmit={(event) => void addReport(event)} className="space-y-3 mb-6">
-                <textarea value={reportContent} onChange={(event) => setReportContent(event.target.value)} maxLength={8000} placeholder="记录实际完成的工作、测试和结果…" className="input resize-y min-h-24" required/>
+                <textarea aria-label="工作汇报内容" value={reportContent} onChange={(event) => setReportContent(event.target.value)} maxLength={8000} placeholder="记录实际完成的工作、测试和结果…" className="input resize-y min-h-24" required/>
                 <button className="primary-btn" disabled={busy || !reportContent.trim()}><Send size={16}/> 添加汇报</button>
               </form>
               <div className="space-y-3">

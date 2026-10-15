@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createElement } from "react";
 import App from "../apps/web/src/App";
@@ -65,6 +65,21 @@ afterEach(() => {
 });
 
 describe("Tasklutein workspace UI", () => {
+  it("exposes names for task and report fields and announces the active status filter", async () => {
+    installApiMock();
+    await enterWorkspace();
+
+    expect(screen.getByRole("textbox", { name: "新任务标题" })).toBeTruthy();
+    expect(screen.getByRole("textbox", { name: "新任务说明" })).toBeTruthy();
+    expect(screen.getByRole("textbox", { name: "工作汇报内容" })).toBeTruthy();
+
+    const filterGroup = screen.getByRole("group", { name: "按任务状态筛选" });
+    expect(within(filterGroup).getByRole("button", { name: "全部" }).getAttribute("aria-pressed")).toBe("true");
+    expect(within(filterGroup).getByRole("button", { name: "待处理" }).getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(within(filterGroup).getByRole("button", { name: "待处理" }));
+    expect(within(filterGroup).getByRole("button", { name: "待处理" }).getAttribute("aria-pressed")).toBe("true");
+  });
+
   it("does not persist a rejected token, permits retry, and clears the session on sign-out", async () => {
     let rejectedFirstAttempt = false;
     apiMock.mockImplementation(async (_token, path, request) => {
@@ -212,7 +227,7 @@ describe("Tasklutein workspace UI", () => {
     });
     await enterWorkspace();
 
-    const input = screen.getByPlaceholderText("记录实际完成的工作、测试和结果…");
+    const input = screen.getByRole("textbox", { name: "工作汇报内容" });
     fireEvent.change(input, { target: { value: "Factual report\nsecond line" } });
     fireEvent.click(screen.getByRole("button", { name: "添加汇报" }));
     await screen.findByRole("alert");
