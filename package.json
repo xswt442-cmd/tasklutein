@@ -22,7 +22,7 @@
     "check": "npm run typecheck && npm run check:scripts && npm test && npm run mcp:smoke && npm run docs:check && npm run build:web && npm run build:worker",
     "mcp": "tsx packages/mcp/src/index.ts",
     "mcp:http": "tsx packages/mcp/src/http-entry.ts",
-    "deploy:worker": "npm run check && wrangler deploy"
+    "deploy:worker": "npm run check && wrangler deploy --keep-vars"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.20.0",

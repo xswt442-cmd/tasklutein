@@ -10,6 +10,10 @@ if (configResult.error) {
   throw new Error(ts.flattenDiagnosticMessageText(configResult.error.messageText, "\n"));
 }
 
+it("preserves existing Dashboard-managed production variables during Wrangler deploy", () => {
+  expect(configResult.config.keep_vars).toBe(true);
+});
+
 it("routes Worker Preview builds to the dedicated HTTPS origin", () => {
   const previewOrigin = configResult.config.previews?.vars?.ORIGIN_URL;
   expect(previewOrigin).toBe("https://preview-origin-tasklutein.xswt.fyi");

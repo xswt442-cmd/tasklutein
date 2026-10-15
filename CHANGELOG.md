@@ -19,6 +19,7 @@ Changes are recorded in a format inspired by [Keep a Changelog](https://keepacha
 - Web 任务标题/说明、工作汇报输入框具备可访问名称，状态筛选组会播报当前选中项。
 - Worker 对非本地 HTTP 请求重定向至 HTTPS；Owner 已授权开启 `xswt.fyi` zone 级 Always Use HTTPS，并验证现有 DNS 主机名均跳转至 HTTPS。
 - HTTP MCP 限制单个请求体最大 1 MiB，并记录当前 SDK 支持的协议版本范围。
+- 为 Cloudflare Wrangler 部署启用 `keep_vars`、增加配置回归测试，防止生产 Dashboard 管理的回源变量被新版本意外清除。
 
 **已知限制**
 - Preview Worker #7 已部署 `dev` 提交 `e314080`。HTTPS 浏览器、Web API、远程 MCP 与 Preview PostgreSQL 完整闭环已通过；API/MCP 容器重启测试和单独的 PostgreSQL 容器重启测试均能读回数据，测试记录已删除并核实。Preview Token 请求 Production API 得到 401。Production 备份恢复和反向 Token 检查尚未确认。Production 应用与自定义站点域名未修改；`xswt.fyi` zone 级 HTTPS 设置按 Owner 授权启用。
@@ -38,6 +39,7 @@ Changes are recorded in a format inspired by [Keep a Changelog](https://keepacha
 - Task title/description and report fields have accessible names, and the status-filter group announces its selected option.
 - The Worker redirects non-local HTTP requests to HTTPS. With Owner authorization, zone-level Always Use HTTPS is enabled for `xswt.fyi` and the existing DNS hostnames were verified to redirect.
 - Limited each HTTP MCP request body to 1 MiB and documented the SDK's supported protocol-version range.
+- Enabled Wrangler `keep_vars` with a configuration regression test to prevent accidental deletion of Dashboard-managed production origin variables.
 
 **Known limitations**
 - Preview Worker deployment #7 serves commit `e314080` from `dev`. The HTTPS browser, Web API, remote MCP, and Preview PostgreSQL flow passed end to end; separate API/MCP and PostgreSQL restart checks read the test records back before they were deleted and verified absent. A Preview token was rejected by the Production API with 401. The Web app reports connection, expired-token, backend, and network states, and its task/report fields and status filters expose accessible names and selected state. Production backup/restore and reverse token rejection remain unverified. The Production app and custom site domain were not changed; zone-level HTTPS for `xswt.fyi` was enabled with Owner authorization.
