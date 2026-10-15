@@ -19,7 +19,7 @@ Changes are recorded in a format inspired by [Keep a Changelog](https://keepacha
 - HTTP MCP 限制单个请求体最大 1 MiB，并记录当前 SDK 支持的协议版本范围。
 
 **已知限制**
-- Preview Worker #5 已部署 `dev` 提交 `b9bcd839`。HTTPS 浏览器、Web API、远程 MCP 与 Preview PostgreSQL 完整闭环已通过并清理唯一测试数据；API/DB 重启持久性、生产备份恢复尚未确认。Production 应用与自定义站点域名未修改；`xswt.fyi` zone 级 HTTPS 设置按 Owner 授权启用。
+- Preview Worker #5 已部署 `dev` 提交 `b9bcd839`。HTTPS 浏览器、Web API、远程 MCP 与 Preview PostgreSQL 完整闭环已通过；API/MCP 容器重启后数据仍可读取，测试记录已删除并核实。Preview Token 请求 Production API 得到 401。数据库容器重启和生产备份恢复尚未确认。Production 应用与自定义站点域名未修改；`xswt.fyi` zone 级 HTTPS 设置按 Owner 授权启用。
 - 只有一个共享工作空间；没有多用户登录、RBAC、MCP OAuth、生产限流和自动数据库迁移。
 
 ### English
@@ -36,5 +36,5 @@ Changes are recorded in a format inspired by [Keep a Changelog](https://keepacha
 - Limited each HTTP MCP request body to 1 MiB and documented the SDK's supported protocol-version range.
 
 **Known limitations**
-- Preview Worker deployment #5 serves commit `b9bcd839` from `dev`. The HTTPS browser, Web API, remote MCP, and Preview PostgreSQL flow passed end to end, and its uniquely tagged test data was deleted and verified absent. API/DB restart persistence and Production backup/restore remain unverified. The Production app and custom site domain were not changed; zone-level HTTPS for `xswt.fyi` was enabled with Owner authorization.
+- Preview Worker deployment #5 serves commit `b9bcd839` from `dev`. The HTTPS browser, Web API, remote MCP, and Preview PostgreSQL flow passed end to end; the records remained readable after API/MCP container restarts and were then deleted and verified absent. A Preview token was rejected by the Production API with 401. Database-container restart and Production backup/restore remain unverified. The Production app and custom site domain were not changed; zone-level HTTPS for `xswt.fyi` was enabled with Owner authorization.
 - One shared workspace only; no user accounts, RBAC, MCP OAuth, production rate limits, or automated database migrations.

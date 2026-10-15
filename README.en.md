@@ -18,7 +18,7 @@
 ---
 
 > **v0.1.0 development scaffold · Production and an isolated Preview exist**
-> See the [deployment guide](docs/development/DEPLOYMENT.en.md) for live status and evidence boundaries. Preview Worker deployment #5 serves commit `b9bcd839` from `dev`. The real HTTPS browser, Web API, remote MCP, and Preview PostgreSQL flow passed: Web created a task and user report, MCP found that task and added an Agent report, browser refresh and SQL read back both sources, then the test rows were deleted and verified absent. Persistence across API/DB restarts, Production writes, and backup recovery remain unverified. Authentication is currently **one shared workspace with two tokens**, not user accounts, OAuth, or team permissions.
+> See the [deployment guide](docs/development/DEPLOYMENT.en.md) for live status and evidence boundaries. Preview Worker deployment #5 serves commit `b9bcd839` from `dev`. The real HTTPS browser, Web API, remote MCP, and Preview PostgreSQL flow passed: Web created a task and user report, MCP found that task and added an Agent report, browser refresh and SQL read back both sources, and API/MCP container restarts preserved the records. The test rows were then deleted and verified absent. A Preview token was rejected by the Production API (401). Restarting the database container, Production writes, and backup recovery remain unverified. Authentication is currently **one shared workspace with two tokens**, not user accounts, OAuth, or team permissions.
 
 ## Features
 
