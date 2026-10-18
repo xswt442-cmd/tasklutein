@@ -8,14 +8,15 @@
 
 ## TypeScript、Worker 与 MCP
 
-需要 Node.js 24+。锁文件为 `package-lock.json`：
+需要 Node.js 24+ 和 Python 3.12+，锁文件为 `package-lock.json`。浏览器工作流测试会启动本机 FastAPI，并使用独立文件版 SQLite；运行完整检查前安装 `backend/requirements-dev.txt`：
 
 ```sh
 npm ci
+python -m pip install -r backend/requirements-dev.txt
 npm run check
 ```
 
-`npm run check` 包含 TypeScript、Vitest、MCP stdio 握手、双语文档、Vite Assets 构建及 `wrangler deploy --dry-run`，**不执行云端部署**。`test/edge.test.ts` 测试 Worker 网关的鉴权与 Header；`test/mcp-http.test.ts` 使用真正的 MCP HTTP Client 进行握手。若修改工具契约，务必更新测试和文档。变动依赖要一并更新 package-lock。
+`npm run check` 包含 TypeScript、Vitest（页面通过真实 HTTP 调用 FastAPI，使用隔离 SQLite）、MCP stdio 握手、双语文档、Vite Assets 构建及 `wrangler deploy --dry-run`，**不执行云端部署**。`test/edge.test.ts` 测试 Worker 网关的鉴权与 Header；`test/mcp-http.test.ts` 使用真实 MCP HTTP Client 检查工具和分页。若修改工具契约，务必更新测试和文档。变动依赖要一并更新 package-lock。
 
 ## FastAPI 与数据库
 
@@ -26,7 +27,18 @@ python -m pytest -q
 ruff check backend/app backend/tests
 ```
 
-API 测试隔离使用 SQLite，生产环境采用 PostgreSQL；测试涵盖任务 CRUD、汇报来源、双令牌和源站密钥门禁。SQLite 成功不能替代真实 PostgreSQL 迁移、Docker、Tunnel、MCP 流式路径及部署验收。生产数据库已存在时，新增版本化迁移，禁止直接修改最初的 DDL 期待自动执行。
+API 行为测试使用隔离 SQLite；PostgreSQL 迁移测试只在显式命名的 `*_test` 专用数据库中创建和清理表。GitHub Actions 使用临时 PostgreSQL 17 服务，并要求迁移集成测试必须运行。需要本地 PostgreSQL 时显式配置：
+
+```powershell
+$env:TASKLUTEIN_TEST_DATABASE_URL = 'postgresql+psycopg://tasklutein_test:<本机测试密码>@127.0.0.1:5432/tasklutein_test'
+$env:TASKLUTEIN_TEST_DATABASE_NAME = 'tasklutein_test'
+$env:TASKLUTEIN_ALLOW_POSTGRES_TEST_RESET = '1'
+python -m pytest -q
+```
+
+测试夹具会核对 URL 中的本机主机和 `*_test` 数据库名，并要求显式允许重置；随后会删除该数据库中的 `tasks`、`reports` 和 `alembic_version` 表。不得指向 Production 或 Preview。API 测试覆盖任务 CRUD、后端生成的汇报来源、双令牌、网关密钥、筛选、分页和全库统计。PostgreSQL 测试验证 Alembic 升级、接管原有 `0001_init.sql` Schema 后保留既有数据、超出旧列表上限的数据读取，以及在 PostgreSQL 上通过 API 写入。SQLite 成功不能证明 Docker、Tunnel 或在线服务部署正常。
+
+Alembic 基线：全新空 PostgreSQL 执行 `alembic upgrade head`。采用旧版 `migrations/0001_init.sql` 建立的数据库必须先检查并确认符合 `0001_baseline`，再由维护者运行 `alembic stamp 0001_baseline`。不得给未核对的数据库直接 stamp，也不在应用启动时自动执行迁移。
 
 ## 文档与安全
 

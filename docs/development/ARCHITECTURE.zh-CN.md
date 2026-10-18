@@ -25,11 +25,11 @@ Cloudflare Tunnel 的公开 hostname 可被直接访问，但没有网关密钥�
 
 ## 数据与 API 的唯一事实源
 
-生产数据库采用 PostgreSQL，`migrations/0001_init.sql` 仅用于首次建表。Task 保存标题、说明、状态、时间戳；Report 通过外键关联 Task，删除 Task 时级联删除报告。FastAPI 负责 Pydantic 校验、SQLAlchemy 事务和 REST API，MCP 工具调用 FastAPI，不直接写数据库。Browser 与 Agent 因此共享同一套业务规则。
+生产数据库采用 PostgreSQL。`migrations/0001_init.sql` 保留现有 Compose 卷初始化路径；`backend/alembic/` 保存版本化迁移基线。已有数据库先核对 Schema，再由维护者 stamp 到基线。Task 保存标题、说明、状态和时间戳；Report 通过级联外键关联任务。FastAPI 负责输入校验、分页、全工作区统计和全部写入；MCP 只调用 REST，让浏览器与 Agent 共用业务规则。
 
 ## MCP 传输与限制
 
-`packages/mcp/src/server.ts` 声明五个工具；`index.ts` 使用 stdio；`http.ts` 提供腾讯云 Streamable HTTP Server。HTTP MCP 为无状态、每请求独立传输模式，适合横向扩展，但不支持跨请求会话状态、服务端主动通知或事件恢复。当前使用固定 Bearer Token，不实现 OAuth、自动客户端注册或公共 MCP Registry 发布。
+`packages/mcp/src/server.ts` 声明六个工具，包含分页读取任务和汇报的能力；`index.ts` 使用 stdio；`http.ts` 提供腾讯云 Streamable HTTP Server。HTTP MCP 为无状态、每请求独立传输模式，适合横向扩展，但不支持跨请求会话状态、服务端主动通知或事件恢复。当前使用固定 Bearer Token，不实现 OAuth、自动客户端注册或公共 MCP Registry 发布。
 
 Worker 转发 HTTP 请求体和响应流；MCP 的 GET SSE 能力是否可用取决于实际 Server 传输支持。当前无状态 HTTP Server 主要使用 POST/JSON 响应；不应声称支持可恢复的长期 SSE 会话。MCP 客户端必须能够设置自定义 Authorization Header，否则不能直接使用该远程接口。
 
@@ -40,6 +40,7 @@ Worker 转发 HTTP 请求体和响应流；MCP 的 GET SSE 能力是否可用取
 - `backend/app/`：业务 API、令牌鉴权、ORM 与响应模型。
 - `packages/mcp/`：stdio + Streamable HTTP 适配器，复用 REST，不导入后端业务 SQL。
 - `migrations/`：PostgreSQL DDL；`deploy/`：Caddy/Docker/Tunnel 配置。
+- `backend/alembic/`：PostgreSQL 版本化迁移；`migrations/0001_init.sql` 仍是初始数据库卷的建表脚本。
 - `test/` 与 `backend/tests/`：网关、MCP、API、认证验证。
 
 后续可以单独扩容 MCP 服务、拆分 FastAPI 服务、迁移 PostgreSQL，Worker 路由契约保持不变。正式上线前还应补充业务多用户授权、数据库备份策略、令牌轮换、端到端部署检查与外层限流。

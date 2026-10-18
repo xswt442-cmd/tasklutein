@@ -41,6 +41,24 @@ docker compose -f deploy/compose.yml --env-file deploy/.env.preview.example conf
 
 `npm run build:worker` 是 Wrangler dry-run，不会部署。`npm run smoke:preview` 是无凭据的只读公网烟测，只检查 Preview health、匿名拒绝与源站拒绝；不会写任务，也不能证明真实鉴权 Token、数据库持久化或 MCP tool call。默认目标是 `dev.preview.tasklutein.xswt.fyi` 和 `preview-origin-tasklutein.xswt.fyi`。
 
+## PostgreSQL 基线与迁移
+
+数据库变更必须由维护者显式运行；应用启动时不会自动迁移。现有 Compose 配置会在新建数据卷时挂载 `migrations/0001_init.sql`，该 Schema 与 Alembic 版本 `0001_baseline` 对应。
+
+接管已有 Preview 或 Production 数据库前，先确认环境和数据卷，完成并验证备份，检查数据表、字段、默认值、CHECK、外键和索引。Compose 新建的数据卷同样会由 `0001_init.sql` 初始化。只有确认现有结构符合 `0001_baseline` 后，获得授权的维护者才可登记版本：
+
+```sh
+docker compose -f deploy/compose.yml exec -T api alembic stamp 0001_baseline
+```
+
+未登记版本且已有业务表的数据库不得执行 `alembic upgrade head`，因为基线迁移会创建这些表。未执行 Compose 初始化脚本且没有任何业务表的 PostgreSQL 数据库才使用以下命令初始化：
+
+```sh
+docker compose -f deploy/compose.yml exec -T api alembic upgrade head
+```
+
+完成 stamp 或升级后，再部署后续 API 版本。迁移需要作为独立批准的操作，在更新 API 前运行。不得重新初始化数据库卷或执行未经审查的 downgrade 清除业务记录。Production 迁移仍需单独授权服务器变更。
+
 本机 Docker Engine 不可用时，Compose `config --quiet` 只校验静态配置，不等于容器启动或数据库可连接。Preview 真实写入验收需另行约定测试数据和清理方式，并确认只使用 Preview Token。
 
 计划内的认证 API/MCP 闭环可在获准环境中运行 `npm run e2e:preview`。先在当前进程安全地提供 `TASKLUTEIN_PREVIEW_WEB_TOKEN` 和 `TASKLUTEIN_PREVIEW_AGENT_TOKEN`，不要回显或写入文件。脚本固定访问 `dev.preview.tasklutein.xswt.fyi`，要求两个 Token 不同；会创建唯一 `[smoke-test]` 任务、验证 Web CRUD/用户汇报和 MCP Agent 汇报归因，最后删除任务并确认 API 读回 404。失败时会报告清理失败，重跑前先检查唯一标记任务。该脚本验证 API/MCP 闭环，不验证浏览器 DOM、移动设备键盘或服务重启持久性；不要把环境变量设为 Production Token。
