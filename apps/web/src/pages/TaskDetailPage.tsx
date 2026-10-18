@@ -1,0 +1,236 @@
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { ArrowLeft, ArrowRight, Pencil, Save, Send, Trash2, X } from "lucide-react";
+import { useEffect, useState } from "react";
+import type { FormEvent } from "react";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router";
+import { api } from "../api";
+import type { ReportPage, Task, TaskStatus } from "../api";
+import { ApiFeedback } from "../components/ApiFeedback";
+
+const statusLabels: Record<TaskStatus, string> = {
+  todo: "待处理",
+  in_progress: "进行中",
+  done: "已完成",
+};
+
+function formatDate(value: string) {
+  return new Date(value).toLocaleString("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+export function TaskDetailPage({ token }: { token: string }) {
+  const { taskId = "" } = useParams();
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [editing, setEditing] = useState(false);
+  const [editTitle, setEditTitle] = useState("");
+  const [editDescription, setEditDescription] = useState("");
+  const [reportDraft, setReportDraft] = useState("");
+  const reportOffsetValue = Number(searchParams.get("reports_offset") ?? 0);
+  const reportOffset = Number.isSafeInteger(reportOffsetValue) && reportOffsetValue >= 0 ? reportOffsetValue : 0;
+
+  const taskQuery = useQuery({
+    queryKey: ["task", taskId],
+    queryFn: () => api<{ task: Task }>(token, "/tasks/" + taskId),
+    enabled: Boolean(taskId),
+  });
+  const reportsQuery = useQuery({
+    queryKey: ["reports", taskId, 25, reportOffset],
+    queryFn: () => api<ReportPage>(token, `/tasks/${taskId}/reports?limit=25&offset=${reportOffset}`),
+    enabled: Boolean(taskId),
+  });
+
+  useEffect(() => {
+    if (!reportsQuery.data || reportOffset === 0 || reportOffset < reportsQuery.data.total) return;
+    const lastOffset = reportsQuery.data.total === 0
+      ? 0
+      : Math.floor((reportsQuery.data.total - 1) / reportsQuery.data.limit) * reportsQuery.data.limit;
+    const next = new URLSearchParams(searchParams);
+    if (lastOffset === 0) next.delete("reports_offset");
+    else next.set("reports_offset", String(lastOffset));
+    setSearchParams(next, { replace: true });
+  }, [reportOffset, reportsQuery.data, searchParams, setSearchParams]);
+
+  const updateTask = useMutation({
+    mutationFn: (changes: Partial<Pick<Task, "title" | "description" | "status">>) =>
+      api<{ task: Task }>(token, "/tasks/" + taskId, { method: "PATCH", body: JSON.stringify(changes) }),
+    onSuccess: async ({ task }) => {
+      queryClient.setQueryData(["task", taskId], { task });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["tasks"] }),
+        queryClient.invalidateQueries({ queryKey: ["overview"] }),
+      ]);
+      setEditing(false);
+    },
+  });
+
+  const addReport = useMutation({
+    mutationFn: () => api(token, `/tasks/${taskId}/reports`, {
+      method: "POST",
+      body: JSON.stringify({ content: reportDraft.trim() }),
+    }),
+    onSuccess: async () => {
+      setReportDraft("");
+      const next = new URLSearchParams(searchParams);
+      next.delete("reports_offset");
+      setSearchParams(next, { replace: true });
+      await queryClient.invalidateQueries({ queryKey: ["reports", taskId] });
+    },
+  });
+
+  const deleteTask = useMutation({
+    mutationFn: () => api<void>(token, "/tasks/" + taskId, { method: "DELETE" }),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["tasks"] }),
+        queryClient.invalidateQueries({ queryKey: ["overview"] }),
+      ]);
+      navigate("/tasks");
+    },
+  });
+
+  function beginEditing(task: Task) {
+    setEditTitle(task.title);
+    setEditDescription(task.description);
+    setEditing(true);
+    updateTask.reset();
+  }
+
+  function saveDetails(event: FormEvent) {
+    event.preventDefault();
+    if (!editTitle.trim() || updateTask.isPending) return;
+    updateTask.mutate({ title: editTitle.trim(), description: editDescription });
+  }
+
+  function submitReport(event: FormEvent) {
+    event.preventDefault();
+    if (!reportDraft.trim() || addReport.isPending) return;
+    addReport.mutate();
+  }
+
+  async function removeTask() {
+    if (deleteTask.isPending || !window.confirm("删除此任务及其全部工作汇报？此操作立即清除数据，不保留历史。")) return;
+    deleteTask.mutate();
+  }
+
+  function changeReportPage(offset: number) {
+    const next = new URLSearchParams(searchParams);
+    if (offset > 0) next.set("reports_offset", String(offset));
+    else next.delete("reports_offset");
+    setSearchParams(next);
+  }
+
+  if (taskQuery.isPending) return <p className="py-16 text-center text-sm text-[#69776d]">正在加载任务…</p>;
+  if (taskQuery.isError) return <div className="space-y-4"><Link className="quiet-link" to="/tasks"><ArrowLeft size={15} /> 返回任务列表</Link><ApiFeedback error={taskQuery.error} onRetry={() => void taskQuery.refetch()} /></div>;
+
+  const task = taskQuery.data.task;
+  const reportData = reportsQuery.data;
+  const reportPages = reportData ? Math.max(1, Math.ceil(reportData.total / reportData.limit)) : 1;
+  const currentReportPage = reportData ? Math.floor(reportData.offset / reportData.limit) + 1 : 1;
+
+  return <div className="space-y-5">
+    <Link className="quiet-link" to="/tasks"><ArrowLeft size={15} /> 返回任务列表</Link>
+
+    <section className="card">
+      <div className="flex flex-col items-start gap-3 sm:flex-row sm:justify-between">
+        <div className="min-w-0 flex-1">
+          <p className="eyebrow">任务详情</p>
+          {editing
+            ? <h2 className="page-title mt-1">编辑任务</h2>
+            : <h2 className="page-title mt-1 break-words">{task.title}</h2>}
+          <p className="mt-2 flex flex-wrap gap-x-1 text-xs text-[#68766c]">
+            <span>创建于 <time className="whitespace-nowrap">{formatDate(task.created_at)}</time></span>
+            <span aria-hidden="true">·</span>
+            <span>最近更新 <time className="whitespace-nowrap">{formatDate(task.updated_at)}</time></span>
+          </p>
+        </div>
+        {!editing && <div className="flex w-full items-center justify-end gap-2 sm:w-auto">
+          <button type="button" className="secondary-btn" onClick={() => beginEditing(task)}><Pencil size={15} />编辑</button>
+          <button type="button" className="danger-btn" onClick={() => void removeTask()} disabled={deleteTask.isPending}>
+            <Trash2 size={15} />删除
+          </button>
+        </div>}
+      </div>
+
+      {editing
+        ? <form onSubmit={saveDetails} className="mt-6 space-y-4">
+          <label className="block text-sm font-medium">标题
+            <input className="input mt-1.5" value={editTitle} maxLength={120} required autoFocus
+              onChange={(event) => setEditTitle(event.target.value)} />
+          </label>
+          <label className="block text-sm font-medium">说明
+            <textarea className="input mt-1.5 min-h-32 resize-y" value={editDescription} maxLength={4000}
+              onChange={(event) => setEditDescription(event.target.value)} />
+          </label>
+          {updateTask.isError && <ApiFeedback error={updateTask.error} />}
+          <div className="flex justify-end gap-2">
+            <button type="button" className="secondary-btn" onClick={() => setEditing(false)}><X size={15} />取消</button>
+            <button type="submit" className="primary-btn" disabled={!editTitle.trim() || updateTask.isPending}>
+              <Save size={15} />{updateTask.isPending ? "正在保存…" : "保存"}
+            </button>
+          </div>
+        </form>
+        : <div className="mt-6 grid gap-5 md:grid-cols-[1fr_220px]">
+          <div>
+            <h3 className="eyebrow">任务说明</h3>
+            <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-[#46574c]">{task.description || "暂无说明"}</p>
+          </div>
+          <label className="block text-sm font-medium">任务状态
+            <select className="input mt-1.5" value={task.status} disabled={updateTask.isPending}
+              onChange={(event) => updateTask.mutate({ status: event.target.value as TaskStatus })}>
+              {(Object.entries(statusLabels) as [TaskStatus, string][]).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+            </select>
+          </label>
+        </div>}
+      {(updateTask.isError || deleteTask.isError) && !editing && <div className="mt-4"><ApiFeedback error={updateTask.error ?? deleteTask.error} /></div>}
+    </section>
+
+    <section className="card">
+      <div className="mb-4 flex items-end justify-between gap-3">
+        <div>
+          <p className="eyebrow">任务记录</p>
+          <h3 className="mt-1 text-lg font-semibold">工作汇报</h3>
+        </div>
+        <span className="text-xs text-[#6a776e]">{reportData ? `共 ${reportData.total} 条` : ""}</span>
+      </div>
+
+      <form onSubmit={submitReport} className="mb-6 space-y-3 rounded-xl border border-[#e6ece3] bg-[#f8faf5] p-4">
+        <label htmlFor="report-content" className="text-sm font-medium">添加工作汇报</label>
+        <textarea id="report-content" aria-label="工作汇报内容" className="input min-h-24 resize-y" maxLength={8000}
+          value={reportDraft} placeholder="记录实际完成的工作、测试和结果…"
+          onChange={(event) => setReportDraft(event.target.value)} required />
+        {addReport.isError && <ApiFeedback error={addReport.error} />}
+        <button type="submit" className="primary-btn" disabled={!reportDraft.trim() || addReport.isPending}>
+          <Send size={15} />{addReport.isPending ? "正在提交…" : "添加汇报"}
+        </button>
+      </form>
+
+      {reportsQuery.isError && <ApiFeedback error={reportsQuery.error} onRetry={() => void reportsQuery.refetch()} />}
+      {reportsQuery.isPending && <p className="py-8 text-center text-sm text-[#69776d]">正在加载汇报…</p>}
+      {reportData?.reports.length === 0 && <p className="py-8 text-center text-sm text-[#69776d]">暂无汇报。Agent 也可以通过 MCP 在这里记录进度。</p>}
+      {reportData && reportData.reports.length > 0 && <div className="divide-y divide-[#edf1ea]">
+        {reportData.reports.map((report) => <article key={report.id} className="py-4 first:pt-1 last:pb-1">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="text-xs font-semibold uppercase tracking-wide text-[#2f7253]">{report.source === "agent" ? "Agent" : "人工"}</span>
+            <time className="text-xs text-[#718076]">{formatDate(report.created_at)}</time>
+          </div>
+          <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-[#46574c]">{report.content}</p>
+        </article>)}
+      </div>}
+
+      {reportData && reportData.total > reportData.limit && <div className="mt-4 flex items-center justify-end gap-3 border-t border-[#edf1ea] pt-4">
+        <span className="text-xs text-[#66746a]">第 {currentReportPage} / {reportPages} 页</span>
+        <button type="button" aria-label="上一页汇报" className="icon-btn" disabled={reportOffset === 0 || reportsQuery.isFetching}
+          onClick={() => changeReportPage(Math.max(0, reportOffset - reportData.limit))}><ArrowLeft size={16} /></button>
+        <button type="button" aria-label="下一页汇报" className="icon-btn" disabled={reportOffset + reportData.limit >= reportData.total || reportsQuery.isFetching}
+          onClick={() => changeReportPage(reportOffset + reportData.limit)}><ArrowRight size={16} /></button>
+      </div>}
+    </section>
+  </div>;
+}
