@@ -2,15 +2,15 @@
 from datetime import UTC, datetime
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi import status as http_status
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from ..auth import Actor, require_actor
 from ..database import get_db
 from ..models import Task
-from ..schemas import TaskCreate, TaskList, TaskStatus, TaskUpdate, TaskView
+from ..schemas import TaskCreate, TaskList, TaskSort, TaskStatus, TaskUpdate, TaskView
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 
@@ -25,13 +25,32 @@ def find_task(db: Session, task_id: UUID) -> Task:
 @router.get("", response_model=TaskList)
 def list_tasks(
     status: TaskStatus | None = None,
+    q: str | None = Query(default=None, max_length=200),
+    sort: TaskSort = "updated_desc",
+    limit: int | None = Query(default=None, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
     _actor: Actor = Depends(require_actor),
 ):
-    statement = select(Task).order_by(Task.updated_at.desc()).limit(200)
+    filters = []
     if status is not None:
-        statement = statement.where(Task.status == status)
-    return {"tasks": db.scalars(statement).all()}
+        filters.append(Task.status == status)
+    if q and q.strip():
+        search = q.strip()
+        filters.append(
+            or_(Task.title.icontains(search, autoescape=True), Task.description.icontains(search, autoescape=True))
+        )
+    effective_limit = limit if limit is not None else 200
+    order = Task.updated_at.desc() if sort == "updated_desc" else Task.created_at.desc()
+    tasks = db.scalars(
+        select(Task)
+        .where(*filters)
+        .order_by(order, Task.id.desc())
+        .offset(offset)
+        .limit(effective_limit)
+    ).all()
+    total = db.scalar(select(func.count(Task.id)).where(*filters)) or 0
+    return {"tasks": tasks, "total": total, "limit": effective_limit, "offset": offset}
 
 
 @router.post("", response_model=dict, status_code=http_status.HTTP_201_CREATED)

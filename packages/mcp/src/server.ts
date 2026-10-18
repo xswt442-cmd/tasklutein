@@ -5,6 +5,7 @@ export type McpApiConfig = {
   apiBase: string;
   agentToken: string;
   gatewayToken?: string;
+  requestId?: string;
 };
 
 export function createTaskluteinMcpServer(config: McpApiConfig): McpServer {
@@ -16,6 +17,7 @@ export function createTaskluteinMcpServer(config: McpApiConfig): McpServer {
       "Content-Type": "application/json",
     };
     if (config.gatewayToken) headers["X-Tasklutein-Gateway"] = config.gatewayToken;
+    if (config.requestId) headers["X-Request-ID"] = config.requestId;
     const response = await fetch(endpoint + "/api" + path, {
       method,
       headers,
@@ -37,9 +39,39 @@ export function createTaskluteinMcpServer(config: McpApiConfig): McpServer {
   const server = new McpServer({ name: "tasklutein", version: "0.1.0" });
 
   server.registerTool("list_tasks", {
-    description: "List tasks in the Tasklutein workspace.",
-    inputSchema: { status: z.enum(["todo", "in_progress", "done"]).optional() },
-  }, async ({ status }) => result(await callApi("GET", "/tasks" + (status ? "?status=" + status : ""))));
+    description: "List tasks in the Tasklutein workspace, optionally filtered and paginated.",
+    inputSchema: {
+      status: z.enum(["todo", "in_progress", "done"]).optional(),
+      q: z.string().trim().max(200).optional(),
+      sort: z.enum(["updated_desc", "created_desc"]).optional(),
+      limit: z.number().int().min(1).max(200).optional(),
+      offset: z.number().int().min(0).optional(),
+    },
+  }, async ({ status, q, sort, limit, offset }) => {
+    const params = new URLSearchParams();
+    if (status) params.set("status", status);
+    if (q) params.set("q", q);
+    if (sort) params.set("sort", sort);
+    if (limit !== undefined) params.set("limit", String(limit));
+    if (offset !== undefined) params.set("offset", String(offset));
+    const query = params.size ? "?" + params.toString() : "";
+    return result(await callApi("GET", "/tasks" + query));
+  });
+
+  server.registerTool("list_reports", {
+    description: "List a task's progress reports, optionally paginated.",
+    inputSchema: {
+      task_id: z.string().uuid(),
+      limit: z.number().int().min(1).max(100).optional(),
+      offset: z.number().int().min(0).optional(),
+    },
+  }, async ({ task_id, limit, offset }) => {
+    const params = new URLSearchParams();
+    if (limit !== undefined) params.set("limit", String(limit));
+    if (offset !== undefined) params.set("offset", String(offset));
+    const query = params.size ? "?" + params.toString() : "";
+    return result(await callApi("GET", "/tasks/" + task_id + "/reports" + query));
+  });
 
   server.registerTool("get_task", {
     description: "Read a task and its progress reports.",

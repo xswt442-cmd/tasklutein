@@ -6,6 +6,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 TaskStatus = Literal["todo", "in_progress", "done"]
+TaskSort = Literal["updated_desc", "created_desc"]
 
 
 class TaskCreate(BaseModel):
@@ -76,7 +77,13 @@ class ReportView(BaseModel):
 
 class TaskList(BaseModel):
     tasks: list[TaskView]
+    total: int
+    limit: int
+    offset: int
 
 
 class ReportList(BaseModel):
     reports: list[ReportView]
+    total: int
+    limit: int
+    offset: int

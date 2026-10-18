@@ -46,10 +46,30 @@ describe("Cloudflare ingress", () => {
     expect(origin).not.toHaveBeenCalled();
   });
 
+  it("rejects oversized REST bodies before forwarding them", async () => {
+    const origin = vi.fn();
+    const body = JSON.stringify({ title: "x".repeat(64 * 1024) });
+    const response = await proxyGateway(new Request("https://app.example.test/api/tasks", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer web-user-token",
+        "Content-Type": "application/json",
+        "Content-Length": String(new TextEncoder().encode(body).length),
+      },
+      body,
+    }), env, origin);
+    expect(response.status).toBe(413);
+    expect((await response.json()).code).toBe("request_too_large");
+    expect(response.headers.get("X-Request-ID")).toMatch(/^[0-9a-f-]{36}$/);
+    expect(origin).not.toHaveBeenCalled();
+  });
+
   it("forwards only whitelisted headers and replaces forged gateway header", async () => {
     const origin = vi.fn(async (request: Request, opts?: RequestInit) => {
       expect(request.url).toBe("https://origin.example.test/api/tasks?status=done");
       expect(request.headers.get("X-Tasklutein-Gateway")).toBe(secret);
+      expect(request.headers.get("X-Request-ID")).toMatch(/^[0-9a-f-]{36}$/);
+      expect(request.headers.get("X-Request-ID")).not.toBe("client-supplied");
       expect(request.headers.get("Cookie")).toBeNull();
       expect(request.headers.get("X-Forged")).toBeNull();
       expect(request.headers.get("Authorization")).toBe("Bearer web-user-token");
@@ -63,13 +83,16 @@ describe("Cloudflare ingress", () => {
         "Authorization": "Bearer web-user-token",
         "Cookie": "secret=session",
         "X-Forged": "value",
-        "X-Tasklutein-Gateway": "bad"
+        "X-Tasklutein-Gateway": "bad",
+        "X-Request-ID": "client-supplied"
       }
     });
     const result = await proxyGateway(req, env, origin);
     expect(result.status).toBe(200);
     expect(result.headers.get("set-cookie")).toBeNull();
     expect(result.headers.get("cache-control")).toBe("no-store");
+    expect(result.headers.get("X-Request-ID")).toMatch(/^[0-9a-f-]{36}$/);
+    expect(result.headers.get("X-Request-ID")).not.toBe("client-supplied");
     expect(origin).toHaveBeenCalledTimes(1);
   });
 
@@ -91,7 +114,9 @@ describe("Cloudflare ingress", () => {
 
   it("fails closed on missing secrets, unsafe origins, and redirects", async () => {
     const health = new Request("https://app.example.test/api/health");
-    expect((await proxyGateway(health, { ASSETS: assets })).status).toBe(503);
+    const unconfigured = await proxyGateway(health, { ASSETS: assets });
+    expect(unconfigured.status).toBe(503);
+    expect(unconfigured.headers.get("X-Request-ID")).toMatch(/^[0-9a-f-]{36}$/);
     expect((await proxyGateway(health, { ...env, ORIGIN_URL: "http://attacker.example.test" })).status).toBe(503);
     const redirected = vi.fn(async () => Response.redirect("https://elsewhere.test", 302));
     expect((await proxyGateway(health, env, redirected)).status).toBe(502);

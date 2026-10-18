@@ -7,7 +7,10 @@ def test_origin_gateway_enforces_an_independent_secret(client: TestClient, monke
     monkeypatch.setenv("EDGE_GATEWAY_TOKEN", secret)
     browser_headers = {"Authorization": "Bearer " + WEB_TOKEN}
 
-    assert client.get("/api/health").status_code == 403
+    missing_gateway = client.get("/api/health")
+    assert missing_gateway.status_code == 403
+    assert missing_gateway.json()["code"] == "invalid_gateway"
+    assert missing_gateway.json()["request_id"] == missing_gateway.headers["X-Request-ID"]
     assert client.get("/api/tasks", headers=browser_headers).status_code == 403
 
     headers = {**browser_headers, "X-Tasklutein-Gateway": "incorrect"}
@@ -17,7 +20,31 @@ def test_origin_gateway_enforces_an_independent_secret(client: TestClient, monke
     assert client.get("/api/tasks", headers=headers).status_code == 200
     assert client.get("/api/health", headers={"X-Tasklutein-Gateway": secret}).status_code == 200
 
+    request_id = "00000000-0000-4000-8000-000000000001"
+    traced = client.get(
+        "/api/health",
+        headers={"X-Tasklutein-Gateway": secret, "X-Request-ID": request_id},
+    )
+    assert traced.status_code == 200
+    assert traced.headers["X-Request-ID"] == request_id
+
 
 def test_gateway_fails_closed_on_short_secret(client: TestClient, monkeypatch):
     monkeypatch.setenv("EDGE_GATEWAY_TOKEN", "short")
-    assert client.get("/api/health").status_code == 503
+    response = client.get("/api/health")
+    assert response.status_code == 503
+    assert response.json()["code"] == "gateway_not_configured"
+    assert response.json()["request_id"] == response.headers["X-Request-ID"]
+
+
+def test_origin_gateway_rejects_large_rest_bodies(client: TestClient, monkeypatch):
+    gateway = "gateway-" + "g" * 56
+    monkeypatch.setenv("EDGE_GATEWAY_TOKEN", gateway)
+    response = client.post(
+        "/api/tasks",
+        headers={"Authorization": "Bearer " + WEB_TOKEN, "X-Tasklutein-Gateway": gateway},
+        content="x" * (64 * 1024 + 1),
+    )
+    assert response.status_code == 413
+    assert response.json()["code"] == "request_too_large"
+    assert response.json()["request_id"] == response.headers["X-Request-ID"]

@@ -1,8 +1,8 @@
 """Progress reports associated with tasks."""
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..auth import Actor, require_actor
@@ -17,17 +17,22 @@ router = APIRouter(prefix="/api/tasks/{task_id}/reports", tags=["reports"])
 @router.get("", response_model=ReportList)
 def list_reports(
     task_id: UUID,
+    limit: int | None = Query(default=None, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
     _actor: Actor = Depends(require_actor),
 ):
     find_task(db, task_id)
+    effective_limit = limit if limit is not None else 100
+    statement = select(Report).where(Report.task_id == task_id)
     records = db.scalars(
-        select(Report)
-        .where(Report.task_id == task_id)
-        .order_by(Report.created_at.desc())
-        .limit(100)
+        statement
+        .order_by(Report.created_at.desc(), Report.id.desc())
+        .offset(offset)
+        .limit(effective_limit)
     ).all()
-    return {"reports": records}
+    total = db.scalar(select(func.count(Report.id)).where(Report.task_id == task_id)) or 0
+    return {"reports": records, "total": total, "limit": effective_limit, "offset": offset}
 
 
 @router.post("", response_model=dict, status_code=201)
