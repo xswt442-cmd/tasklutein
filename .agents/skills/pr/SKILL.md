@@ -1,6 +1,6 @@
 ---
 name: pr
-description: "Use when writing a PR body."
+description: "Use when drafting or revising a pull request title or body from actual repository changes. Read the repository PR template, explain the final implementation, write an evidence-grounded bilingual completed-task checklist, and report real verification. Do not use for changelogs or release notes."
 metadata:
   credits:
     skill: show-me
@@ -9,196 +9,66 @@ metadata:
     url: "https://github.com/humanlayer/skills/blob/main/plugins/show-me/skills/show-me/SKILL.md"
 ---
 
-Use the following template to write the PR body. The PR body must include both Chinese and English versions, organized as follows:
+# PR: clear structure, useful explanation
 
-1. **Chinese Version**: Write the entire PR body in Chinese, following the template.
-2. **English Version**: After completing the Chinese version, write the entire PR body in English, following the same template.
+Write a PR that a reviewer can understand without reconstructing the whole diff. **Keep the structure light; give the changes enough substance.**
 
-**Do not alternate between Chinese and English within sections.** Complete the full Chinese version first, followed by the full English version.
+## One format source
 
-Note that only the English version of the template is provided below.
+1. Read the repository's `.github/PULL_REQUEST_TEMPLATE.md` (or its selected template under `.github/PULL_REQUEST_TEMPLATE/`) first. Honor applicable `AGENTS.md` and repository documentation rules.
+2. **The repository template owns section names, language order, and required fields.** This skill owns how to investigate and fill those fields. Do not introduce a competing PR format, or copy this skill's fallback layout over an existing template.
+3. Follow explicit user instructions where compatible with repository policy. If no template exists, use the lightweight fallback at the end.
+4. Draft and revise locally unless the user has authorized creating or editing the remote PR. Do not assume permission to commit, push, switch branches, merge, or alter CI settings.
 
-```markdown
-## Summary
+## Establish the facts
 
-<diagram, diff-sketch, or tree>
+- Inspect the intended base/head branches, commit history, diff summary, and relevant code or documentation. Use the actual PR diff (for example, `git diff <base>...<head>`), not a summary inferred only from commit messages.
+- For an existing PR, read its current description before revising it. Preserve verified facts, remove outdated claims, and avoid losing context that still matters.
+- Check test/build output and CI status when available. Distinguish **passed**, **failed**, **not run**, and **still running**. Never turn a command's existence into a claim that it passed.
+- Do not include private paths, hosts, tokens, logs, secrets, internal handoff notes, or temporary local environment details.
 
-## Task List
+## Explain what changed
 
-- [x] <completed change or verified behavior> — <concrete result, scope, or command>
-- [ ] <known follow-up or unverified check, if any> — <what remains and why>
+The **Changes / 变更** section is the main explanation, not a second checklist.
 
-## Evidence
+- Open with the purpose and the user-visible or engineering outcome.
+- Explain the **final implementation**: important behavior, where responsibility lives, how relevant parts interact, and any current compatibility or safety constraints. State a design trade-off only if it helps review the actual change.
+- For an ordinary PR, a short opening paragraph plus a few informative sentences or grouped bullets is usually enough. For a cross-module PR, use several focused paragraphs when needed. **Do not enforce a rigid word limit or collapse substantial changes into one vague sentence.**
+- Mention relevant components, contracts, or file paths only when they help reviewers locate the change. Avoid enumerating every touched file.
+- Explain the implementation, **not the development process**: no debugging diary, discarded approaches, speculative roadmap, or exaggerated claims.
+- Be specific and readable in both languages; keep identifiers, commands, and file names unchanged.
 
-- **Before:** <screenshot/output/failing test run>
-  **After:** <screenshot/output/passing test run>
+## Completed task checklist
 
-## Merge Danger
+- Where the repository template includes Tasks / 任务, use Markdown checkboxes in **both** languages. Prefer **3–6 meaningful completed items** for a normal PR; use fewer for tiny changes, more only when justified.
+- Mark `- [x]` **only** when the implementation or check is actually complete and supported by the diff, test output, or supplied evidence. Each item should name a concrete result or scope.
+- Keep checklist items short and easy to scan. Put explanations in Changes and commands/results in Verification instead of repeating them in every checkbox.
+- Under a completed-work PR standard, do **not** add `- [ ]`, post-merge plans, skipped validation, or unrelated future work to pad the list. Track future work in Issues. Unpassed required checks remain visible in CI/review gates, not falsely checked off.
+- Complete the entire Chinese section first, then the entire English section. Corresponding checklist items must have the same meaning, order, and checked state.
 
-**Door:** <one-way or two-way>
+## Verification
 
-<optional: description>
+- List actual passing checks with their relevant command, scope, and concise result (for example, `npm test` — 42 passed). Include manual checks only if performed.
+- Do not confuse a local build or unit test with live production validation. Do not claim pending CI has passed.
+- If required checks are failed or unavailable, do not fabricate success or describe the PR as ready to merge. State the blocker to the user; let CI and review gates enforce it. Do not insert invented completed tasks.
+- Prefer a concise evidence summary over raw console logs.
 
-**Blast Radius:** <one-word description>
+## Visuals and risk, only when useful
 
-<optional: potential ramifications of merge>
-```
+- **No diagram by default.** Add at most one compact diagram or diff sketch when a nontrivial control flow, cross-service boundary, state transition, or directory restructure would otherwise be hard to understand.
+- If a diagram is useful, prefer Mermaid for flow or interaction; otherwise use a small relevant code/diff excerpt. Never add illustrations just to fill a section.
+- Screenshots, before/after evidence, and impact/rollback notes are **optional**, not mandatory sections. Include them only for a genuine review need or when required by the repository template. Explain material risks in the relevant existing section rather than imposing "Merge Danger" or "Blast Radius" fields.
 
-## Sections
+## Final review before sending
 
-Skip all preambles and keep prose brief. Use the user's domain language from `GLOSSARY.md`.
+- Template headings and order preserved; Chinese and English facts align.
+- Changes explain **why, what, and how**, with detail proportionate to complexity.
+- Checklist items describe only completed work; Verification cites only checks that actually passed.
+- No leaked private context, fictitious tests, plans masquerading as completed work, or mandatory decorative diagrams.
+- If editing a remote PR, reread its rendered body and confirm the intended title and scope.
 
-### Summary
+## Fallback when the repository has no PR template
 
-Pick the smallest view that makes the key point clear.
+Use `## 简体中文` with `### 变更`, `### 任务`, `### 验证`; then `## English` with `### Changes`, `### Tasks`, `### Verification`.
 
-- Show logic or an algorithm as pseudocode:
-
-```text
-on(save)
-  if content is unchanged
-    return cached result
-  write new content
-  return fresh result
-```
-
-- Show runtime control flow as a call tree:
-
-```text
-submitForm
-  createSession
-    persistPrompt
-    launchAgent
-  navigateToSession
-```
-
-- Show UI structure as a component tree, including state and module boundaries that matter:
-
-```text
-<SessionPage> (apps/example/src/routes/session.tsx)
-  useSessionEvents()
-  <SessionToolbar>
-    <RunSkillButton> (packages/ui)
-```
-
-- Show file responsibility or a broad refactor as a shallow file tree:
-
-```text
-src/
-├── commands/       # parses user actions
-├── sessions/       # owns session state
-└── transport/      # sends API requests
-```
-
-- Show component interaction, control flow, or data flow with Mermaid:
-
-```mermaid
-sequenceDiagram
-    participant User
-    participant UI
-    participant Daemon
-    User->>UI: choose command
-    UI->>Daemon: send expanded prompt
-    Daemon-->>UI: stream result
-```
-
-- Use `diff` when the point is what changes and the surrounding shape already exists. Match the diff shape to the topic.
-
-For a component change:
-
-```diff
- <SessionPage>
-   useSessionEvents()
-   <SessionToolbar>
-+    <RunSkillButton />
-   <SessionTimeline>
-+    <SkillResultCard />
-```
-
-For a file-layout change:
-
-```diff
- src/
- ├── commands/
-+│   └── show-me.ts       # expands the slash command
- ├── sessions/
--└── transport.ts
-+└── transport/
-+    ├── client.ts
-+    └── stream.ts
-```
-
-For a call-tree or call-stack change:
-
-```diff
- submitForm
-   createSession
-     persistPrompt
-+    expandSkillMention
-     launchAgent
--  navigateToSession
-+  navigateToSession
-+    subscribeToEvents
-```
-
-For a state or control-flow change:
-
-```diff
- on(save)
--  write content
-+  if content is unchanged
-+    return cached result
-+  write new content
-+  invalidate cache
-```
-
-- Show the whole block when most of it is new, when omitted context would hide ownership or order, or when the user needs a copyable target shape:
-
-```ts
-function expandSkill(command: string): string {
-  const skillName = command.slice(1);
-  return `use the ${skillName} skill`;
-}
-```
-
-#### Guidance
-
-Place each visual next to the short text it supports. Keep only the calls, files, props, states, and boundaries needed to answer the user's current question or the options to resolve the current discussion point.
-
-You may use one of these, you may use several, it is unlikely you will use all of them. Use your judgement and don't overwhelm the user.
-
-### Task List
-
-Include a Markdown task list in **both** the Chinese and English versions of every PR body. Use `- [x]` and `- [ ]` checkboxes to make progress and remaining work scannable.
-
-This is a **general-purpose task list, not necessarily a test plan**. Choose the most useful items for this PR: implemented changes, behavior or integration checks, automated tests, manual validation, release/preparation steps, and known follow-ups. Prefer concrete, meaningful tasks over generic claims such as "done" or "tested". Use inline commands, results, affected areas, or short context when they add clarity.
-
-- Mark `[x]` **only for work actually completed or checks actually performed**, supported by the available changes, logs, or user-provided evidence. Never imply that a test ran just because a script exists.
-- Mark `[ ]` for real outstanding work, skipped verification, or known limitations. Briefly explain why when useful. Do not invent unfinished tasks merely to fill the list.
-- Keep items concise and specific, generally one line each. Group related tasks or use a more descriptive heading only when it improves readability; do not force the heading `Test Plan`.
-- Capture the most important details, not an exhaustive history. Avoid repeating long explanations from Summary or Evidence.
-- The Chinese version should contain the **entire checklist in Chinese**, followed later by the **entire equivalent checklist in English**. Keep the items, ordering, and checked/unchecked states consistent across the two versions.
-
-Example task-list shape (illustrative only; do not claim these actions occurred unless confirmed):
-
-```markdown
-## Task List
-
-- [x] Update the request-handling flow — preserve streaming responses
-- [x] Verify the package build — `npm run build` passed
-- [ ] Manually check the Windows desktop flow — not run yet
-```
-
-### Evidence
-
-Concrete evidence that the change works. Show a before and after.
-
-Screenshots are S-tier - when the environment is set up for it and the change is visual.
-
-Execution-based evidence is A-tier. Test results, console output. Show the exact test that now fails and passes, using pseudocode.
-
-### Merge Danger
-
-Describe whether it's a one-way or two-way door. You can walk back through two-way doors, but not one-way doors. A PR that is cheap to roll back is lower risk. Changes that involve destructive actions or hard-to-reverse decisions are one-way doors.
-
-The blast radius is the potential impact or scope of the changes introduced by this PR. Consider all possibilities. Examples are layout shift, breakages for consumers, mobile responsiveness, etc.
+Give Changes enough prose to explain the actual implementation; use `- [x]` for genuinely completed work, and keep Verification limited to observed passing results. Do not create empty placeholder claims.
