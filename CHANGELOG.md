@@ -46,11 +46,15 @@ This file records shipped features, fixes, compatibility changes, and upgrade re
 
 ### 简体中文
 
-**首个公开版本**
+首个公开版本。
+
+**新增**
 - 提供 React 任务管理界面，支持创建、查询、编辑、删除、状态筛选及用户与 Agent 的进度汇报。
 - Cloudflare Worker 提供静态资源与 `/api/*`、`/mcp` 公网入口；FastAPI 与 PostgreSQL 负责业务和持久化。
 - MCP 提供本地 stdio 和远程 Streamable HTTP 传输，支持任务读取、创建、更新与报告提交。
 - 提供 Docker Compose、Caddy、Cloudflare Tunnel 部署配置以及独立 Web/Agent 令牌和网关密钥。
+
+**改进**
 - 改善任务编辑、汇报来源归属、错误提示、表单可访问性和连接状态显示。
 - Worker 保护回源密钥绑定并强制安全的 HTTP 处理；增加生产 PostgreSQL 逻辑备份和隔离恢复工具。
 
@@ -60,11 +64,15 @@ This file records shipped features, fixes, compatibility changes, and upgrade re
 
 ### English
 
-**Initial public release**
+Initial public release.
+
+**Added**
 - Added a React task interface with CRUD, status filters, and human/Agent progress reports.
 - Cloudflare Worker serves static assets and public `/api/*` and `/mcp` ingress; FastAPI and PostgreSQL own business logic and persistence.
 - Added local stdio and remote Streamable HTTP MCP transports for task reads, creation, updates, and reporting.
 - Added Docker Compose, Caddy, Cloudflare Tunnel, separate Web/Agent tokens, and a gateway secret.
+
+**Improved**
 - Improved task editing, server-verified report attribution, error handling, form accessibility, and connection status.
 - Hardened Worker origin binding preservation and HTTP handling, with PostgreSQL logical backup and isolated restore tools.
 

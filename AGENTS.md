@@ -9,6 +9,8 @@
 
 ## Documentation and reviews
 
+- Read the repository-local [.github/engineering/ENGINEERING_STANDARD.md](.github/engineering/ENGINEERING_STANDARD.md) for documentation, categorized changelog, pull request, and release conventions; this project's verified code and specific rules remain authoritative.
+
 - Tracked files must be portable and describe current behavior, public interfaces, actual limitations, and repeatable operations. Do not include personal paths, machine names, private SSH aliases, local network settings, one-off deployment records, debugging history, pending acceptance, or development plans.
 - READMEs are user-facing. Update the authoritative section of a document rather than appending a development diary. Comments should explain constraints that still apply to the current code.
 - Keep `README.md` and `README.en.md` consistent. Keep paired technical guides consistent across languages.

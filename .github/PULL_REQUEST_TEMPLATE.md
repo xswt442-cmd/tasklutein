@@ -2,7 +2,7 @@
 
 ### 变更
 
-<!-- 用 1–2 句话概括本次最终完成的变更。不写开发过程。 -->
+<!-- 先概括目的与结果，再按实际复杂度解释关键实现、模块交互、行为与必要的设计取舍；可以分段，不设固定字数。不要记录调试/开发流水。 -->
 
 ### 任务
 
@@ -17,7 +17,7 @@
 
 ### Changes
 
-<!-- Summarize the final changes in one or two sentences. Omit implementation history. -->
+<!-- Explain the purpose, result, key implementation, behavior and relevant design choices in proportion to the change. Several focused paragraphs are welcome; omit debugging history. -->
 
 ### Tasks
 
