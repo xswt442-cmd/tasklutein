@@ -27,6 +27,11 @@ jobs:
         with:
           node-version: '24'
           cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install FastAPI for real HTTP browser-flow tests
+        run: python -m pip install -r backend/requirements-dev.txt
       - run: npm ci
       - name: Check TypeScript, MCP transports, docs, and Worker bundle
         run: npm run check
@@ -37,6 +42,25 @@ jobs:
     name: FastAPI tests and lint
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: tasklutein_test
+          POSTGRES_USER: tasklutein_test
+          POSTGRES_PASSWORD: tasklutein-${{ github.run_id }}-${{ github.run_attempt }}
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U tasklutein_test -d tasklutein_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TASKLUTEIN_TEST_DATABASE_URL: postgresql+psycopg://tasklutein_test:tasklutein-${{ github.run_id }}-${{ github.run_attempt }}@127.0.0.1:5432/tasklutein_test
+      TASKLUTEIN_TEST_DATABASE_NAME: tasklutein_test
+      TASKLUTEIN_ALLOW_POSTGRES_TEST_RESET: '1'
+      TASKLUTEIN_REQUIRE_POSTGRES: '1'
     steps:
       - uses: actions/checkout@v4
         with:
