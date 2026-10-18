@@ -15,8 +15,9 @@ from alembic import command
 from alembic.config import Config
 from app.database import get_session_factory
 from app.main import app
+from app.models import AgentToken
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -165,6 +166,26 @@ def test_empty_postgres_upgrade_isolates_users_and_tracks_report_provenance(post
         assert client.post("/api/session/bootstrap", headers=alice_headers).status_code == 403
         assert client.get("/api/agent/whoami", headers=agent_headers(alice_key_two)).status_code == 403
 
+    command.check(alembic_config())
+
+
+def test_agent_token_workspace_fk_name_matches_postgres_migration(postgres_database: str):
+    command.upgrade(alembic_config(), "head")
+
+    with create_engine(postgres_database).connect() as connection:
+        workspace_fk = next(
+            foreign_key
+            for foreign_key in inspect(connection).get_foreign_keys("agent_tokens")
+            if foreign_key["constrained_columns"] == ["workspace_id"]
+        )
+    model_fk = next(
+        foreign_key
+        for foreign_key in AgentToken.__table__.foreign_key_constraints
+        if foreign_key.column_keys == ["workspace_id"]
+    )
+
+    assert workspace_fk["name"] == "agent_tokens_workspace_id_fkey"
+    assert model_fk.name == workspace_fk["name"]
     command.check(alembic_config())
 
 

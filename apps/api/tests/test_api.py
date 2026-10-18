@@ -3,7 +3,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from app.main import app, logger
-from app.models import AgentToken, Report, User
+from app.models import Activity, AgentToken, Report, User
 from conftest import agent_headers, gateway_headers, issue_agent_key, user_headers
 from fastapi.testclient import TestClient
 from sqlalchemy import select
@@ -460,6 +460,53 @@ def test_agent_activity_identifies_the_verified_key(client: TestClient):
     assert report.json()["report"]["actor_name"] == "History MCP Agent"
     listed_report = client.get(f"/api/tasks/{task['id']}/reports", headers=user_headers()).json()["reports"][0]
     assert listed_report["actor_name"] == "History MCP Agent"
+
+
+def test_history_actor_name_tracks_current_agent_key_name(client: TestClient):
+    key = client.post("/api/agent-tokens", headers=user_headers(), json={"name": "Before rename"})
+    assert key.status_code == 201, key.text
+    token_id = UUID(key.json()["token"]["id"])
+    secret = key.json()["secret"]
+
+    task = client.post("/api/tasks", headers=user_headers(), json={"title": "Rename attribution"})
+    assert task.status_code == 201, task.text
+    task_id = task.json()["task"]["id"]
+    report = client.post(
+        f"/api/tasks/{task_id}/reports",
+        headers=agent_headers(secret),
+        json={"content": "Reported before the key rename."},
+    )
+    assert report.status_code == 201, report.text
+    report_id = UUID(report.json()["report"]["id"])
+    assert report.json()["report"]["actor_name"] == "Before rename"
+
+    renamed = client.patch(
+        f"/api/agent-tokens/{token_id}", headers=user_headers(), json={"name": "After rename"}
+    )
+    assert renamed.status_code == 200, renamed.text
+
+    listed_report = client.get(f"/api/tasks/{task_id}/reports", headers=user_headers()).json()["reports"][0]
+    assert listed_report["id"] == str(report_id)
+    assert listed_report["source"] == "agent"
+    assert listed_report["actor_name"] == "After rename"
+    activities = client.get(
+        "/api/activity", headers=user_headers(), params={"source": "agent", "task_id": task_id}
+    ).json()["activities"]
+    assert len(activities) == 1
+    assert activities[0]["event_type"] == "report.created"
+    assert activities[0]["agent_token_id"] == str(token_id)
+    assert activities[0]["actor_name"] == "After rename"
+
+    with app.state.test_session_factory() as db:
+        stored_report = db.get(Report, report_id)
+        stored_activity = db.scalar(
+            select(Activity).where(
+                Activity.task_id == UUID(task_id),
+                Activity.event_type == "report.created",
+            )
+        )
+        assert stored_report is not None and stored_report.agent_token_id == token_id
+        assert stored_activity is not None and stored_activity.agent_token_id == token_id
 
 
 def test_archiving_keeps_a_read_only_task_and_complete_report_snapshot(client: TestClient):

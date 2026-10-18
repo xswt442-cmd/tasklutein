@@ -63,7 +63,7 @@ class AgentToken(Base):
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     workspace_id: Mapped[UUID] = mapped_column(
         Uuid(as_uuid=True),
-        ForeignKey("workspaces.id", name="fk_tasks_workspace_id_workspaces", ondelete="RESTRICT"),
+        ForeignKey("workspaces.id", name="agent_tokens_workspace_id_fkey", ondelete="RESTRICT"),
         nullable=False,
     )
     created_by: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
