@@ -38,6 +38,8 @@ jobs:
             apps/api/requirements-dev.txt
       - name: Install Python dependencies used by Web integration tests
         run: python -m pip install -r apps/api/requirements-dev.txt
+      - name: Install uv for FastAPI-backed Vitest tests
+        run: python -m pip install uv==0.11.29
       - run: npm ci
       - name: Verify source before deployment
         run: npm run check

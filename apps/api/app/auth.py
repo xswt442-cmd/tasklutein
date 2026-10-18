@@ -1,47 +1,216 @@
-"""Single-workspace, dual-credential access control.
-
-The separate browser and agent credentials label the source of reports.
-They are *not* individual user accounts or granular agent permissions.
-"""
+"""Request principals derived from the trusted Worker identity or Agent keys."""
 import hmac
 import os
+import re
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from hashlib import sha256
 from typing import Literal
+from uuid import UUID
 
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
-Actor = Literal["user", "agent"]
+from .database import get_db
+from .models import AgentToken, User, Workspace
+
+ActorType = Literal["user", "agent"]
 security = HTTPBearer(auto_error=False)
+_EMAIL = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 
 
-def actor_for_token(token: str | None, web_token: str | None, agent_token: str | None) -> Actor | None:
-    if not token or not web_token or not agent_token:
-        return None
-    if len(web_token) < 32 or len(agent_token) < 32 or web_token == agent_token:
-        return None
-    digest = sha256(token.encode("utf-8")).digest()
-    if hmac.compare_digest(digest, sha256(web_token.encode("utf-8")).digest()):
-        return "user"
-    if hmac.compare_digest(digest, sha256(agent_token.encode("utf-8")).digest()):
-        return "agent"
-    return None
+@dataclass(frozen=True)
+class AccessIdentity:
+    issuer: str
+    subject: str
+    email: str
 
 
-def require_actor(credentials: HTTPAuthorizationCredentials | None = Depends(security)) -> Actor:
-    web_token = os.getenv("WEB_ACCESS_TOKEN")
-    agent_token = os.getenv("AGENT_ACCESS_TOKEN")
+@dataclass(frozen=True)
+class Principal:
+    actor_type: ActorType
+    user_id: UUID
+    workspace_id: UUID
+    agent_token_id: UUID | None
+    agent_token_name: str | None
+    email: str
+
+
+def provision_user_workspace(db: Session, identity: AccessIdentity) -> tuple[User, Workspace]:
+    user = db.scalar(
+        select(User).where(
+            User.access_issuer == identity.issuer,
+            User.access_subject == identity.subject,
+        )
+    )
+    if user is None:
+        user = User(
+            access_issuer=identity.issuer,
+            access_subject=identity.subject,
+            email=identity.email,
+        )
+        db.add(user)
+        try:
+            db.flush()
+        except IntegrityError:
+            db.rollback()
+            user = db.scalar(
+                select(User).where(
+                    User.access_issuer == identity.issuer,
+                    User.access_subject == identity.subject,
+                )
+            )
+            if user is None:
+                raise
+
+    if user.disabled_at is not None:
+        db.rollback()
+        raise HTTPException(status_code=403, detail="user_disabled")
+
+    workspace = db.scalar(select(Workspace).where(Workspace.owner_id == user.id))
+    if workspace is None:
+        workspace = Workspace(owner_id=user.id, name="Personal workspace")
+        db.add(workspace)
+        try:
+            db.flush()
+        except IntegrityError as exc:
+            db.rollback()
+            user = db.scalar(
+                select(User).where(
+                    User.access_issuer == identity.issuer,
+                    User.access_subject == identity.subject,
+                )
+            )
+            if user is None:
+                raise
+            if user.disabled_at is not None:
+                raise HTTPException(status_code=403, detail="user_disabled") from exc
+            workspace = db.scalar(select(Workspace).where(Workspace.owner_id == user.id))
+            if workspace is None:
+                raise
+
+    if user.email != identity.email:
+        user.email = identity.email
+    db.commit()
+    db.refresh(user)
+    db.refresh(workspace)
+    return user, workspace
+
+
+def require_access_identity(request: Request) -> AccessIdentity:
+    if not getattr(request.state, "gateway_verified", False):
+        raise HTTPException(status_code=403, detail="invalid_gateway")
+
+    issuer = request.headers.get("X-Tasklutein-Access-Issuer", "")
+    subject = request.headers.get("X-Tasklutein-Access-Subject", "")
+    email = request.headers.get("X-Tasklutein-Access-Email", "").strip().lower()
     if (
-        not web_token
-        or not agent_token
-        or len(web_token) < 32
-        or len(agent_token) < 32
-        or web_token == agent_token
-        or web_token.startswith("REPLACE_WITH")
-        or agent_token.startswith("REPLACE_WITH")
+        not issuer.startswith("https://")
+        or len(issuer) > 512
+        or not subject
+        or len(subject) > 255
+        or not _EMAIL.fullmatch(email)
+        or len(email) > 320
     ):
-        raise HTTPException(status_code=503, detail="server_not_configured")
-    actor = actor_for_token(credentials.credentials if credentials else None, web_token, agent_token)
-    if actor is None:
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+        allowed_origins = {
+            origin.strip()
+            for origin in os.getenv("WEB_ORIGINS", "http://localhost:5173").split(",")
+            if origin.strip()
+        }
+        if request.headers.get("Origin") not in allowed_origins:
+            raise HTTPException(status_code=403, detail="origin_not_allowed")
+
+    return AccessIdentity(issuer=issuer, subject=subject, email=email)
+
+
+def _user_principal(db: Session, identity: AccessIdentity) -> Principal:
+    user = db.scalar(
+        select(User).where(
+            User.access_issuer == identity.issuer,
+            User.access_subject == identity.subject,
+        )
+    )
+    if user is None:
+        raise HTTPException(status_code=401, detail="session_bootstrap_required")
+    if user.disabled_at is not None:
+        raise HTTPException(status_code=403, detail="user_disabled")
+
+    workspace = db.scalar(select(Workspace).where(Workspace.owner_id == user.id))
+    if workspace is None:
+        raise HTTPException(status_code=403, detail="workspace_not_configured")
+    return Principal(
+        actor_type="user",
+        user_id=user.id,
+        workspace_id=workspace.id,
+        agent_token_id=None,
+        agent_token_name=None,
+        email=user.email,
+    )
+
+
+def _agent_principal(db: Session, token: str) -> Principal:
+    digest = sha256(token.encode("utf-8")).digest()
+    token_hash = digest.hex()
+    agent_token = db.scalar(select(AgentToken).where(AgentToken.token_hash == token_hash))
+    if agent_token is None:
         raise HTTPException(status_code=401, detail="unauthorized", headers={"WWW-Authenticate": "Bearer"})
-    return actor
+
+    try:
+        stored_digest = bytes.fromhex(agent_token.token_hash)
+    except ValueError:
+        stored_digest = b""
+    if len(stored_digest) != len(digest) or not hmac.compare_digest(stored_digest, digest):
+        raise HTTPException(status_code=401, detail="unauthorized", headers={"WWW-Authenticate": "Bearer"})
+
+    now = datetime.now(UTC)
+    expires_at = agent_token.expires_at
+    if expires_at is not None and expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=UTC)
+    if agent_token.revoked_at is not None or (expires_at is not None and expires_at <= now):
+        raise HTTPException(status_code=401, detail="unauthorized", headers={"WWW-Authenticate": "Bearer"})
+
+    user = db.get(User, agent_token.created_by)
+    workspace = db.get(Workspace, agent_token.workspace_id)
+    if user is None or workspace is None or workspace.owner_id != user.id:
+        raise HTTPException(status_code=401, detail="unauthorized", headers={"WWW-Authenticate": "Bearer"})
+    if user.disabled_at is not None:
+        raise HTTPException(status_code=403, detail="user_disabled")
+
+    return Principal(
+        actor_type="agent",
+        user_id=user.id,
+        workspace_id=workspace.id,
+        agent_token_id=agent_token.id,
+        agent_token_name=agent_token.name,
+        email=user.email,
+    )
+
+
+def require_principal(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
+    db: Session = Depends(get_db),
+) -> Principal:
+    if credentials is not None:
+        if credentials.scheme.lower() != "bearer":
+            raise HTTPException(status_code=401, detail="unauthorized")
+        return _agent_principal(db, credentials.credentials)
+    return _user_principal(db, require_access_identity(request))
+
+
+def require_user_principal(principal: Principal = Depends(require_principal)) -> Principal:
+    if principal.actor_type != "user":
+        raise HTTPException(status_code=403, detail="user_identity_required")
+    return principal
+
+
+def require_agent_principal(principal: Principal = Depends(require_principal)) -> Principal:
+    if principal.actor_type != "agent":
+        raise HTTPException(status_code=401, detail="agent_key_required", headers={"WWW-Authenticate": "Bearer"})
+    return principal

@@ -16,7 +16,7 @@ const statusLabels: Record<TaskStatus, string> = {
 const validStatuses = new Set<TaskStatus>(["todo", "in_progress", "done"]);
 const validSorts = new Set<TaskSort>(["updated_desc", "created_desc"]);
 
-export function TasksPage({ token }: { token: string }) {
+export function TasksPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -41,7 +41,7 @@ export function TasksPage({ token }: { token: string }) {
       const params = new URLSearchParams({ sort, limit: String(limit), offset: String(offset) });
       if (status !== "all") params.set("status", status);
       if (q) params.set("q", q);
-      return api<TaskPage>(token, "/tasks?" + params.toString());
+      return api<TaskPage>("/tasks?" + params.toString());
     },
     placeholderData: keepPreviousData,
   });
@@ -60,7 +60,7 @@ export function TasksPage({ token }: { token: string }) {
   }, [limit, offset, setSearchParams, tasks.data, tasks.isPlaceholderData]);
 
   const createTask = useMutation({
-    mutationFn: () => api<{ task: { id: string } }>(token, "/tasks", {
+    mutationFn: () => api<{ task: { id: string } }>("/tasks", {
       method: "POST",
       body: JSON.stringify({ title: title.trim(), description }),
     }),
@@ -70,6 +70,7 @@ export function TasksPage({ token }: { token: string }) {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["tasks"] }),
         queryClient.invalidateQueries({ queryKey: ["overview"] }),
+        queryClient.invalidateQueries({ queryKey: ["activity"] }),
       ]);
       navigate(`/tasks/${task.id}`);
     },
@@ -103,7 +104,7 @@ export function TasksPage({ token }: { token: string }) {
     <div>
       <p className="eyebrow">工作区</p>
       <h2 className="page-title">任务</h2>
-      <p className="mt-2 text-sm text-[#56655a]">搜索、筛选和更新当前任务。任务删除会连同工作汇报一起清除，不保留历史。</p>
+      <p className="mt-2 text-sm text-[#56655a]">搜索、筛选和更新当前任务。删除时可以归档并保留报告和活动，也可以删除全部历史。</p>
     </div>
 
     <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_300px]">

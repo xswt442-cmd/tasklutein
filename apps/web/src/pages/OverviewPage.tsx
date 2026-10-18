@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { ArrowRight, CheckCircle2, Circle, Clock3, ListTodo, RefreshCw } from "lucide-react";
 import { Link } from "react-router";
 import { api } from "../api";
-import type { Overview, Task, TaskPage, TaskStatus } from "../api";
+import type { Activity, Overview, Task, TaskPage, TaskStatus } from "../api";
 import { ApiFeedback } from "../components/ApiFeedback";
 
 const statusLabels: Record<TaskStatus, string> = {
@@ -20,14 +20,22 @@ function formatDate(value: string) {
   });
 }
 
-export function OverviewPage({ token }: { token: string }) {
+const activityLabels: Record<Activity["event_type"], string> = {
+  "task.created": "创建任务",
+  "task.updated": "更新任务",
+  "task.status_changed": "更改状态",
+  "task.deleted": "归档任务",
+  "report.created": "新增汇报",
+};
+
+export function OverviewPage() {
   const overview = useQuery({
     queryKey: ["overview"],
-    queryFn: () => api<Overview>(token, "/overview"),
+    queryFn: () => api<Overview>("/overview"),
   });
   const recentTasks = useQuery({
     queryKey: ["tasks", { sort: "updated_desc", limit: 6, offset: 0 }],
-    queryFn: () => api<TaskPage>(token, "/tasks?sort=updated_desc&limit=6&offset=0"),
+    queryFn: () => api<TaskPage>("/tasks?sort=updated_desc&limit=6&offset=0"),
   });
 
   if (overview.isError) {
@@ -87,6 +95,27 @@ export function OverviewPage({ token }: { token: string }) {
         </Link>)}
       </div>}
       {recentTasks.isFetching && !recentTasks.isPending && <p className="mt-3 flex items-center gap-2 text-xs text-[#718076]"><RefreshCw size={13} /> 正在更新</p>}
+    </section>
+
+    <section className="card">
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <div>
+          <p className="eyebrow">工作区动态</p>
+          <h3 className="mt-1 text-lg font-semibold">最近活动</h3>
+        </div>
+        <Link className="quiet-link" to="/history?view=activity">全部活动 <ArrowRight size={15} /></Link>
+      </div>
+      {overview.data && overview.data.recent_activities.length === 0 && <p className="py-6 text-center text-sm text-[#647268]">还没有活动记录。</p>}
+      {overview.data && overview.data.recent_activities.length > 0 && <div className="divide-y divide-[#edf1ea]">
+        {overview.data.recent_activities.map((activity) => <article key={activity.id} className="flex min-w-0 flex-col gap-1 py-3 first:pt-1 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0">
+            <p className="truncate text-sm font-semibold text-[#203e30]">{activity.task_title}</p>
+            <p className="mt-1 text-xs text-[#66746a]">{activityLabels[activity.event_type]} · {activity.actor_name || (activity.actor_type === "agent" ? "Agent" : "用户")}</p>
+          </div>
+          <time className="shrink-0 text-xs text-[#718076]">{formatDate(activity.occurred_at)}</time>
+        </article>)}
+      </div>}
+      {overview.isFetching && !overview.isPending && <p className="mt-3 flex items-center gap-2 text-xs text-[#718076]"><RefreshCw size={13} /> 正在更新</p>}
     </section>
   </div>;
 }

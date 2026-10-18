@@ -4,7 +4,8 @@
 
 - Tasklutein uses React/Vite, a Cloudflare Worker, FastAPI, PostgreSQL, and MCP services deployed with Docker. Inspect the current code and relevant documentation before modifying or describing behavior.
 - The Cloudflare Worker serves static assets and acts as the public HTTP gateway for `/api/*` and `/mcp`. FastAPI owns business validation, task and report persistence, and database writes. MCP tools use the REST API rather than accessing PostgreSQL directly.
-- Web and Agent tokens currently grant access to the same shared workspace. The application does not provide per-user permissions or OAuth. FastAPI determines report attribution from the authenticated caller; an Agent report is not independent proof that a task is complete.
+- Cloudflare Access users receive separate personal workspaces. Web sessions and Agent keys are scoped to the owning workspace; team workspaces and fine-grained roles are not implemented. FastAPI determines report attribution from the authenticated caller; an Agent report is not independent proof that a task is complete.
+- Reports and activities retain links to the verified user or Agent key. Their `actor_name` display label is resolved from the current email or key name when read; changing either can change the displayed name on older records. The system does not store a name snapshot for each event.
 - Keep gateway credentials, bearer tokens, database contents, and other secrets out of Git, logs, frontend `VITE_*` values, test snapshots, and public documentation.
 
 ## Documentation and reviews

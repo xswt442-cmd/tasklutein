@@ -4,22 +4,43 @@ English · [简体中文](API.zh-CN.md)
 
 ## Public Ingress and Authentication
 
-One Cloudflare Worker hostname serves all public access. Static Web Assets live at `/`; `/api/*` proxies to Tencent FastAPI; `/mcp` proxies to Tencent MCP HTTP Server.
+Web and remote MCP use separate Cloudflare Worker hostnames. The Web host serves static pages and `/api/*`; the MCP host serves only the exact `/mcp` path, with other paths returning `404`. `/mcp` on the Web host is not forwarded to the MCP server. Use the configured `<web-host>` and `<mcp-host>` values; the two entry points have different URLs.
 
-The Worker injects `X-Tasklutein-Gateway` using its secret `ORIGIN_GATEWAY_TOKEN`, verified on Tencent using `EDGE_GATEWAY_TOKEN`. Clients must not supply this header. Except `GET /api/health`, business APIs also require `Authorization: Bearer <TOKEN>`. Browser uses `WEB_ACCESS_TOKEN`; agent/API uses `AGENT_ACCESS_TOKEN`. Both currently grant full access to **one shared workspace**, not separate users.
+Web API requests use Cloudflare Access. After verifying the Access JWT, the Worker forwards its issuer, subject, and verified email to FastAPI in internal identity headers, removing any client-supplied headers with those names. Except for `GET /api/health`, the Web API requires an established user identity; the first visit creates the user and personal workspace through `POST /api/session/bootstrap`. The browser does not send a business Bearer token.
+
+Remote MCP clients send a personal Agent key as `Authorization: Bearer <AGENT_KEY>` to `https://<mcp-host>/mcp`. The MCP server uses that key for FastAPI calls; the key's user and personal workspace determine its data scope. Clients must not send `X-Tasklutein-Gateway` or internal identity headers. The Worker injects the gateway header matching `ORIGIN_GATEWAY_TOKEN`; FastAPI and HTTP MCP verify it using `EDGE_GATEWAY_TOKEN`.
+
+`GET /api/health` does not require user identity. `GET /api/ready` requires an established Web identity or a valid Agent key. All business endpoints read or modify only the caller's workspace. A task in another workspace is treated as missing and returns `404`.
+
+## Session and Personal Agent Keys
+
+| Method | Path | Description |
+| --- | --- | --- |
+| POST | `/api/session/bootstrap` | Create or return the user and personal workspace from the identity verified by the Worker |
+| GET | `/api/me` | Return the current user and workspace; requires an established Web identity |
+| GET | `/api/agent-tokens` | List Agent-key metadata for the current workspace |
+| POST | `/api/agent-tokens` | Create a personal Agent key |
+| PATCH | `/api/agent-tokens/{uuid}` | Update the name or expiry of an active key |
+| DELETE | `/api/agent-tokens/{uuid}` | Revoke a key and retain its metadata |
+| GET | `/api/agent/whoami` | Validate an Agent key and return its user, workspace, and key identifiers |
+
+`POST /api/agent-tokens` accepts `{"name":"Build agent","expires_at":null}`. `name` must contain 1–80 characters. Optional `expires_at` must be a future timestamp with a timezone. Success returns `201` with a one-time plaintext `secret` and `token` metadata that does not contain the secret. The server stores only a digest and display prefix; plaintext appears only in the create response and cannot be retrieved through the API later. Metadata `prefix` is limited to `tlu_` plus the first three key characters; list and update responses contain no remaining key characters, plaintext, or digest. The list includes `id`, `name`, `prefix`, creation time, expiry, and revocation time, including revoked keys. `PATCH` can update `name` and `expires_at` independently; setting `expires_at` to `null` means no expiry. Only active keys in the current workspace can be updated; revoked keys return `409`, and keys outside the workspace return `404`. `DELETE` soft-revokes and returns `204`; the list retains the row with `revoked_at` set, and repeated revocation also returns `204`.
+
+Agent keys are for MCP identity validation and the API calls made by MCP. Requests to `/api/*` through the Web hostname use Web identity authentication; that hostname does not provide a public REST login using Agent Bearer keys.
 
 ## Task REST API
 
 | Method | Path | Description |
 | --- | --- | --- |
-| GET | `/api/health` | Health, no user Bearer (still requires origin gateway secret) |
-| GET | `/api/ready` | Database readiness; requires gateway and business Bearer token |
-| GET | `/api/overview` | Workspace-wide task totals by status |
-| GET | `/api/tasks` | Filter and page tasks; up to 200 when `limit` is omitted |
-| POST | `/api/tasks` | Create task |
-| GET | `/api/tasks/{uuid}` | Fetch task |
-| PATCH | `/api/tasks/{uuid}` | Update title, description, status |
-| DELETE | `/api/tasks/{uuid}` | Delete task and associated reports |
+| GET | `/api/health` | Health check; no user identity required |
+| GET | `/api/ready` | Database readiness; requires a valid user or Agent identity |
+| GET | `/api/overview` | Current workspace task totals, status counts, and recent activity |
+| GET | `/api/tasks` | Filter and page tasks in the current workspace |
+| POST | `/api/tasks` | Create a task in the current workspace |
+| GET | `/api/tasks/{uuid}` | Fetch a task in the current workspace |
+| PATCH | `/api/tasks/{uuid}` | Update title, description, or status |
+| DELETE | `/api/tasks/{uuid}?history=keep` | Archive a task and preserve its snapshot, reports, and activity |
+| DELETE | `/api/tasks/{uuid}?history=delete` | Permanently delete a task, reports, and activity |
 
 Create payload:
 
@@ -27,36 +48,61 @@ Create payload:
 {"title":"Fix release workflow","description":"Run CI and verify results","status":"todo"}
 ```
 
-Valid statuses: `todo`, `in_progress`, `done`. Creation returns `201` with `{"task":...}`; list returns `{"tasks":[],"total":0,"limit":25,"offset":0}`; read/update return `{"task":...}`; deletion returns `204`. Invalid fields return `422`; missing tasks `404`.
+Valid statuses are `todo`, `in_progress`, and `done`. Creation returns `201` with `{"task":...}`; list returns `{"tasks":[],"total":0,"limit":25,"offset":0}`; read and update return `{"task":...}`; deletion returns `204`. Invalid fields return `422`; a task missing from the current workspace returns `404`. The `done` status does not mean that a task is archived.
 
-List query parameters are optional `status`, `q` (case-insensitive literal search over title and description, up to 200 characters), `sort` (`updated_desc` or `created_desc`), `limit` (1–200), and nonnegative `offset`. Omitting `limit` preserves the original response of up to 200 tasks; new clients should set the page size explicitly. Results use descending UUID as a secondary sort key. `total` counts every task that matches the filters, independent of the current page.
+Current-task endpoints, Overview, search, and MCP task tools include only tasks whose `archived_at` is null. Archived tasks are available only through the History API. Accessing an archived task through a current-task or report endpoint, or accessing a task in another workspace, returns `404`.
 
-`GET /api/overview` returns `total`, `by_status`, and `generated_at`. Status counts cover every task in the shared workspace, not just the first 200. The timestamp describes when this summary was calculated.
+List query parameters are optional `status`, `q` (case-insensitive literal search over title and description, up to 200 characters), `sort` (`updated_desc` or `created_desc`), `limit` (1–200), and nonnegative `offset`. If `limit` is omitted, up to 200 tasks are returned. Results use descending UUID as a secondary sort key. `total` counts every task in the workspace matching the filters, independent of the current page.
+
+`GET /api/overview` returns `total`, `by_status`, `recent_activities`, and `generated_at`. Status counts cover every current task in the workspace, not just the first 200; recent activity contains at most five records and is scoped to the same workspace.
 
 ## Report REST API
 
 | Method | Path | Description |
 | --- | --- | --- |
-| GET | `/api/tasks/{uuid}/reports` | Page reports; up to 100 when `limit` is omitted |
-| POST | `/api/tasks/{uuid}/reports` | Append report, return `201` |
+| GET | `/api/tasks/{uuid}/reports` | Page reports for a task in the current workspace |
+| POST | `/api/tasks/{uuid}/reports` | Append a report and return `201` |
 
-Body accepts only `{"content":"..."}`. FastAPI stamps report `source` as `user` or `agent` based on verified auth, not client-supplied JSON. Report creation and task status updates are separate operations. Reports accept `limit` (1–100) and nonnegative `offset`; omitting `limit` preserves the original response of up to 100 reports. Results sort by descending `created_at`, then descending UUID; the response includes `total`, `limit`, and `offset`.
+The body accepts only `{"content":"..."}`. FastAPI sets report `source`, user attribution, and Agent-key attribution from the verified identity; clients cannot supply ownership fields. The create response's `actor_name` uses the email or Agent key name from the verified identity for that request. Later reads resolve the saved actor ID to the associated record's current email or name. Renaming a key or synchronizing an email can therefore change the displayed name on older reports; the system does not store a name snapshot for the time of the operation. Legacy reports whose actor cannot be recovered return `null`, and the UI displays only their `source`. Reports accept `limit` (1–100) and nonnegative `offset`; if `limit` is omitted, up to 100 are returned. Results sort by descending `created_at`, then descending UUID; the response includes `total`, `limit`, and `offset`. Adding a report does not change the task's `updated_at`.
+
+## History and Activity REST API
+
+| Method | Path | Description |
+| --- | --- | --- |
+| GET | `/api/history/tasks` | Filter and page archived tasks in the current workspace |
+| GET | `/api/history/tasks/{uuid}` | Read the complete task fields captured at archive time |
+| GET | `/api/history/tasks/{uuid}/reports` | Read all reports for an archived task, with pagination |
+| DELETE | `/api/history/tasks/{uuid}` | Clear the task's reports and activity; permanently delete it if archived |
+| GET | `/api/activity` | Filter and page activity in the current workspace |
+| DELETE | `/api/activity/{event_id}` | Delete one activity record in the current workspace |
+
+The task row stores the UTC archive time in `archived_at`; a null value means the task is current. Archiving preserves the original task ID, all task fields, every report, and the associated activity. Archived tasks and reports are read-only. `DELETE /api/tasks/{uuid}?history=keep` archives the task and creates `task.deleted`; `history=delete` physically deletes the task with its reports and activity. Omitting `history` preserves legacy client behavior and physically deletes the full group. When clearing all history for a current task, the task and its state remain while all reports and activity are removed. When the task is archived, the same operation also physically deletes the archived task. IDs outside the current workspace return `404`. History and activity read endpoints are available to Web users and Agents within their workspace; task deletion, whole-history cleanup, and single-activity deletion require a verified Web user identity.
+
+`GET /api/history/tasks` supports `q` (case-insensitive literal search over title and description, up to 200 characters), `limit` (1–200, default 25), and nonnegative `offset`; results sort by descending archive time and then descending UUID. Archived reports accept `limit` (1–100, default 100) and nonnegative `offset`; pagination affects each response, not what is retained. In report and activity responses, `actor_name` is a display label resolved from the associated user's current email or Agent key's current name; it is not a name snapshot, so later renames or email synchronization affect older records' displayed labels. Persisted user/key IDs retain the actor association. Legacy reports with unknown attribution return `null`. `GET /api/activity` supports filters `source` (`user` or `agent`), `event_type`, and `task_id`, plus `limit` (1–100, default 100) and nonnegative `offset`. Activity records return `actor_type` and `actor_name`. Timestamps are timezone-aware UTC; activity results sort by descending occurrence time and then descending UUID for stable pagination. History and activity queries are scoped to the caller's workspace.
+
+Activity types are `task.created`, `task.updated`, `task.status_changed`, `task.deleted`, and `report.created`. Each real task or report change and its activity record commit in one database transaction; if activity insertion fails, the business change rolls back too. A PATCH that changes status creates one `task.status_changed` event, whose summary may include other fields changed in the same request. A PATCH with no value changes updates neither the task timestamp nor activity. Summaries contain only controlled changed-field and before/after status values; they do not copy task descriptions, report bodies, or secrets. Existing tasks and reports do not receive fabricated events, and past completion times are not inferred from `updated_at`; actor attribution that cannot be recovered for legacy reports remains unknown. Activity is deletable business history, not a tamper-proof security audit log.
+
+Task updates, report creation, archiving, and whole-history cleanup lock the target task and check its archive state. Archived tasks cannot be changed through current-task or report-write endpoints. The transaction keeps task changes and activity records consistent.
 
 ## Remote MCP Streamable HTTP
 
-URL: `https://tasklutein.<domain>/mcp`, routed by Worker to the Node MCP Server on Tencent Docker. Clients must support a custom `Authorization: Bearer <AGENT_ACCESS_TOKEN>` header. The lockfile currently resolves `@modelcontextprotocol/sdk` 1.32.1, whose highest supported protocol version is `2025-11-25` (including the initialization handshake); compatibility with the newer `2026-07-28` transport metadata headers and semantics is not claimed. HTTP mode is stateless with a fresh MCP transport per POST and JSON replies; requests are limited to 1 MiB. Session replay and OAuth are not implemented. The server accepts POST only; GET, DELETE, and other methods return `405`. OAuth-only MCP hosts may not be compatible.
+URL: `https://<mcp-host>/mcp`. On the configured MCP hostname, the Worker routes only the exact `/mcp` path to the Node MCP server in Tencent Docker. Clients must support a custom `Authorization: Bearer <personal Agent key>` header. The lockfile resolves `@modelcontextprotocol/sdk` 1.32.1, whose highest supported protocol version is `2025-11-25` (including the initialization handshake); compatibility with the newer `2026-07-28` transport metadata headers and semantics is not claimed. HTTP mode is stateless, uses an independent MCP transport per POST, and returns JSON; requests are limited to 1 MiB. The server accepts POST only; GET, DELETE, and other methods return `405`. Session replay and OAuth are not implemented; OAuth-only MCP clients may not be compatible.
 
-## MCP Tools and Errors
+## MCP Tools
 
 | Tool | Input summary | Behavior |
 | --- | --- | --- |
-| `list_tasks` | optional status, q, sort, limit, offset | Search and list one task page |
-| `list_reports` | task_id (UUID), optional limit and offset | Read one report page |
-| `get_task` | id (UUID) | Read a task and its first report page |
-| `create_task` | title, optional description | Create task |
-| `update_task` | id, optional title/description/status | Update task |
-| `add_report` | task_id, content | Append agent report |
+| `list_tasks` | optional status, q, sort, limit, offset | Search and list one page from the key's workspace |
+| `list_reports` | task_id (UUID), optional limit and offset | Read one report page for a task in that workspace |
+| `get_task` | id (UUID) | Read a task and its default first report page |
+| `create_task` | title, optional description | Create a task in the key's workspace |
+| `update_task` | id, optional title/description/status | Update a task in that workspace |
+| `add_report` | task_id, content | Append an Agent report |
 
-Optional local stdio MCP provides the same tools, calling Worker `/api/*` over HTTPS or local FastAPI during development.
+The optional local stdio MCP adapter uses a personal Agent key configured as `TASKLUTEIN_API_TOKEN` and calls the FastAPI REST API for that workspace. Existing MCP task tools operate only on current tasks and do not read or modify archived tasks.
 
-API requests with a declared body larger than 64 KiB are rejected with `413`; MCP keeps its separate 1 MiB request limit. API errors preserve `detail` and add a stable `code` and `request_id`. Validation `detail` remains an array of field errors, but rejected input values are omitted. Each API response includes `X-Request-ID`; the Worker replaces client-supplied IDs before forwarding. Logs contain the request ID, route, method, status, and duration, without request bodies or credentials. HTTP statuses include missing/invalid business token `401`, missing/invalid origin secret `403`, unconfigured gateway or unavailable database `503`, validation `422`, and missing record `404`. Public Worker drops unapproved proxy headers and rejects origin redirects. RBAC, cursor pagination, API rate limits, OAuth, and a business audit log are not implemented.
+API requests with a declared body larger than 64 KiB return `413`; MCP has a separate 1 MiB request limit. API errors preserve `detail` and include `code` and `request_id`. Validation `detail` is an array of field errors and does not echo rejected input. Each API response includes `X-Request-ID`; the Worker replaces client-supplied IDs before forwarding. Logs contain the request ID, route, method, status, and duration, without request bodies or credentials. Common statuses include missing/invalid identity `401`, unauthorized request or invalid gateway credential `403`, unconfigured gateway or unavailable database `503`, validation `422`, and missing record in the current workspace `404`. The public Worker drops unapproved proxy headers and rejects origin redirects. Fine-grained roles, cursor pagination, API rate limits, OAuth, and a tamper-proof security audit log are not implemented.
+
+## Database Upgrade Compatibility
+
+Migrations do not run automatically when the API starts. For an existing database, first apply `0002_identity_workspace`, have the intended owner sign in through Cloudflare Access and create a personal workspace, then apply `0003_task_workspace_required` and `0004_task_history`. If unassigned tasks from the former shared workspace remain, a maintainer must explicitly provide that user's Access issuer, subject, and email plus the confirmation value `assign-existing-tasks`. The migration preserves those tasks and their associated reports together in that one workspace; it does not infer or split ownership. Existing report source and content are preserved, while user and Agent-key attribution remain unset. `0004_task_history` treats existing tasks as current and does not fabricate activity. After the first archive, an older backend that ignores `archived_at` would show archived tasks again, so rollback must retain archive filtering and workspace isolation; removing the history schema requires separate review. See the [architecture guide](ARCHITECTURE.en.md) for the full migration requirements.

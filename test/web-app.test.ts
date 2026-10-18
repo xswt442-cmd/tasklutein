@@ -12,12 +12,14 @@ import { createElement } from "react";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import App from "../apps/web/src/App";
+import { api, ApiError } from "../apps/web/src/api";
 import { createHttpMcpServer } from "../apps/mcp/src/http";
 
 const root = process.cwd();
 const backend = join(root, "apps", "api");
-const webToken = "web-browser-test-token-" + "a".repeat(40);
-const agentToken = "agent-browser-test-token-" + "b".repeat(40);
+const testIssuer = "https://access.example.test";
+const testSubject = "browser-integration-user";
+const testEmail = "browser-integration@example.test";
 const gatewayToken = "gateway-browser-integration-token-" + "g".repeat(40);
 const databaseDirectory = join(root, "node_modules", ".cache", "tasklutein", "web-test");
 const databasePath = join(databaseDirectory, `.web-e2e-${process.pid}.sqlite3`);
@@ -28,6 +30,7 @@ const nativeFetch = globalThis.fetch.bind(globalThis);
 
 let apiOrigin = "";
 let apiProcess: ChildProcess | undefined;
+let browserRequests: Array<{ url: string; method: string; headers: Headers }> = [];
 
 async function freePort(): Promise<number> {
   const server = createServer();
@@ -59,8 +62,6 @@ beforeAll(async () => {
     ...process.env,
     PYTHONPATH: backend,
     DATABASE_URL: databaseUrl,
-    WEB_ACCESS_TOKEN: webToken,
-    AGENT_ACCESS_TOKEN: agentToken,
     EDGE_GATEWAY_TOKEN: gatewayToken,
   };
   apiProcess = spawn(python, ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", String(port)], {
@@ -106,38 +107,81 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  sessionStorage.clear();
   window.history.replaceState({}, "", "/");
+  browserRequests = [];
   vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
     const localUrl = typeof input === "string" && input.startsWith("/") ? new URL(input, apiOrigin) : input;
     const headers = new Headers(init?.headers);
     headers.set("X-Tasklutein-Gateway", gatewayToken);
+    headers.set("X-Tasklutein-Access-Issuer", testIssuer);
+    headers.set("X-Tasklutein-Access-Subject", testSubject);
+    headers.set("X-Tasklutein-Access-Email", testEmail);
+    headers.set("Origin", "http://localhost:5173");
+    browserRequests.push({ url: String(localUrl), method: init?.method ?? "GET", headers });
     return nativeFetch(localUrl, { ...init, headers });
   });
+  const bootstrap = await nativeFetch(new URL("/api/session/bootstrap", apiOrigin), {
+    method: "POST", headers: { ...testHeaders(), "Content-Type": "application/json" }, body: "{}",
+  });
+  if (!bootstrap.ok) throw new Error("Could not bootstrap the isolated browser-test user");
   const response = await nativeFetch(new URL("/api/tasks?limit=200", apiOrigin), {
-    headers: { Authorization: "Bearer " + webToken, "X-Tasklutein-Gateway": gatewayToken },
+    headers: testHeaders(),
   });
   if (!response.ok) throw new Error("Could not reset the isolated browser-test workspace");
   const page = await response.json() as { tasks: Array<{ id: string }> };
   for (const task of page.tasks) {
     const deleted = await nativeFetch(new URL("/api/tasks/" + task.id, apiOrigin), {
       method: "DELETE",
-      headers: { Authorization: "Bearer " + webToken, "X-Tasklutein-Gateway": gatewayToken },
+      headers: testHeaders(),
     });
     if (deleted.status !== 204) throw new Error("Could not clear an isolated browser-test task");
+  }
+  const archivedResponse = await nativeFetch(new URL("/api/history/tasks?limit=200&offset=0", apiOrigin), {
+    headers: testHeaders(),
+  });
+  if (!archivedResponse.ok) {
+    const error = await archivedResponse.json().catch(() => ({})) as { code?: unknown };
+    throw new Error(`Could not reset archived tasks in the isolated browser-test workspace: HTTP ${archivedResponse.status}${typeof error.code === "string" ? ` (${error.code})` : ""}`);
+  }
+  const archivedPage = await archivedResponse.json() as { tasks: Array<{ id: string }> };
+  for (const task of archivedPage.tasks) {
+    const deleted = await nativeFetch(new URL("/api/history/tasks/" + task.id, apiOrigin), {
+      method: "DELETE",
+      headers: testHeaders(),
+    });
+    if (deleted.status !== 204) throw new Error("Could not clear an isolated archived browser-test task");
+  }
+  const activityResponse = await nativeFetch(new URL("/api/activity?limit=100&offset=0", apiOrigin), { headers: testHeaders() });
+  if (!activityResponse.ok) throw new Error(`Could not reset browser-test activity: HTTP ${activityResponse.status}`);
+  const activityPage = await activityResponse.json() as { activities: Array<{ id: string }> };
+  for (const activity of activityPage.activities) {
+    const deleted = await nativeFetch(new URL("/api/activity/" + activity.id, apiOrigin), {
+      method: "DELETE",
+      headers: testHeaders(),
+    });
+    if (deleted.status !== 204) throw new Error("Could not clear an isolated browser-test activity");
   }
 });
 
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 async function enterWorkspace() {
   render(createElement(App));
-  fireEvent.change(screen.getByLabelText("工作空间访问令牌"), { target: { value: webToken } });
-  fireEvent.click(screen.getByRole("button", { name: "进入工作空间" }));
   await screen.findByRole("heading", { name: "Overview" });
+}
+
+function testHeaders() {
+  return {
+    "X-Tasklutein-Gateway": gatewayToken,
+    "X-Tasklutein-Access-Issuer": testIssuer,
+    "X-Tasklutein-Access-Subject": testSubject,
+    "X-Tasklutein-Access-Email": testEmail,
+    Origin: "http://localhost:5173",
+  };
 }
 
 describe("Tasklutein browser workflow over the real FastAPI HTTP API", () => {
@@ -153,7 +197,14 @@ describe("Tasklutein browser workflow over the real FastAPI HTTP API", () => {
     await screen.findByRole("heading", { name: title });
 
     fireEvent.change(screen.getByLabelText("任务状态"), { target: { value: "in_progress" } });
-    await waitFor(() => expect((screen.getByLabelText("任务状态") as HTMLSelectElement).value).toBe("in_progress"));
+    await waitFor(async () => {
+      const statusResponse = await nativeFetch(
+        new URL("/api/tasks?q=" + encodeURIComponent(title), apiOrigin),
+        { headers: testHeaders() },
+      );
+      const statusPage = await statusResponse.json() as { tasks: Array<{ status: string }> };
+      expect(statusPage.tasks[0]?.status).toBe("in_progress");
+    });
 
     fireEvent.change(screen.getByLabelText("工作汇报内容"), {
       target: { value: "Browser report saved through the FastAPI report endpoint." },
@@ -166,15 +217,170 @@ describe("Tasklutein browser workflow over the real FastAPI HTTP API", () => {
     await screen.findByText("Browser report saved through the FastAPI report endpoint.");
 
     const tasksResponse = await nativeFetch(new URL("/api/tasks?q=" + encodeURIComponent(title), apiOrigin), {
-      headers: { Authorization: "Bearer " + webToken, "X-Tasklutein-Gateway": gatewayToken },
+      headers: testHeaders(),
     });
     const tasks = await tasksResponse.json() as { total: number; tasks: Array<{ status: string; title: string }> };
     expect(tasks.total).toBe(1);
     expect(tasks.tasks[0]).toMatchObject({ title, status: "in_progress" });
 
-    fireEvent.click(screen.getByRole("button", { name: "退出" }));
-    expect(sessionStorage.getItem("tasklutein_token")).toBeNull();
-    expect(await screen.findByLabelText("工作空间访问令牌")).toBeTruthy();
+    expect(browserRequests.some(({ url }) => url.endsWith("/api/session/bootstrap"))).toBe(true);
+    expect(browserRequests.some(({ url }) => url.endsWith("/api/me"))).toBe(true);
+    expect(browserRequests.every(({ headers }) => !headers.has("Authorization"))).toBe(true);
+    expect(window.localStorage.length).toBe(0);
+    expect(window.sessionStorage.length).toBe(0);
+  });
+
+  it("archives a task through the UI and reads its complete report history from the real API", async () => {
+    await enterWorkspace();
+    const actorNameCountBeforeReport = screen.queryAllByText(testEmail).length;
+    const title = `E2E Archive ${Date.now()}`;
+    const description = "This archived description remains available as a read-only snapshot.";
+    const initialReport = `Oldest archived report ${Date.now()}`;
+
+    fireEvent.click(screen.getAllByRole("link", { name: "任务" })[0]);
+    await screen.findByRole("heading", { name: "任务" });
+    fireEvent.change(screen.getByLabelText("新任务标题"), { target: { value: title } });
+    fireEvent.change(screen.getByLabelText("新任务说明"), { target: { value: description } });
+    fireEvent.click(screen.getByRole("button", { name: "创建任务" }));
+    await screen.findByRole("heading", { name: title });
+
+    fireEvent.change(screen.getByLabelText("工作汇报内容"), { target: { value: initialReport } });
+    fireEvent.click(screen.getByRole("button", { name: "添加汇报" }));
+    await screen.findByText(initialReport);
+    await waitFor(() => expect(screen.getAllByText(testEmail)).toHaveLength(actorNameCountBeforeReport + 1));
+    const currentTaskResponse = await nativeFetch(new URL("/api/tasks?q=" + encodeURIComponent(title), apiOrigin), {
+      headers: testHeaders(),
+    });
+    const currentTaskPage = await currentTaskResponse.json() as { tasks: Array<{ id: string }> };
+    const taskId = currentTaskPage.tasks[0]?.id;
+    if (!taskId) throw new Error("The UI-created task was missing from the current task API");
+    for (let index = 0; index < 25; index += 1) {
+      const report = await nativeFetch(new URL(`/api/tasks/${taskId}/reports`, apiOrigin), {
+        method: "POST",
+        headers: { ...testHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({ content: `Archive report page ${index}` }),
+      });
+      expect(report.status).toBe(201);
+    }
+
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    fireEvent.click(screen.getByRole("button", { name: "删除任务" }));
+    fireEvent.click(screen.getByRole("button", { name: "删除任务（保留历史，推荐）" }));
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining("任务字段、全部工作汇报和活动会保存到历史页面"));
+    await screen.findByText("归档任务 · 只读");
+    await screen.findByText("共 26 条");
+    expect(screen.getByText(title)).toBeTruthy();
+    expect(screen.getByText(description)).toBeTruthy();
+    expect(screen.getAllByText(testEmail)).toHaveLength(actorNameCountBeforeReport + 25);
+    expect(screen.queryByRole("button", { name: "编辑" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "添加汇报" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "下一页汇报" }));
+    await screen.findByText(initialReport);
+    expect(screen.getAllByText(testEmail)).toHaveLength(actorNameCountBeforeReport + 1);
+    const archivedTask = await nativeFetch(new URL(`/api/history/tasks/${taskId}`, apiOrigin), { headers: testHeaders() });
+    expect(archivedTask.status).toBe(200);
+    const archivedValue = await archivedTask.json() as { task: { archived_at: string; title: string } };
+    expect(archivedValue.task).toMatchObject({ title, archived_at: expect.any(String) });
+    const currentTasks = await nativeFetch(new URL("/api/tasks?q=" + encodeURIComponent(title), apiOrigin), { headers: testHeaders() });
+    expect((await currentTasks.json() as { total: number }).total).toBe(0);
+
+    fireEvent.click(screen.getAllByRole("link", { name: "历史" })[0]);
+    await screen.findByRole("heading", { name: "历史" });
+    fireEvent.click(screen.getByRole("button", { name: "活动记录" }));
+    await screen.findAllByText("归档任务");
+    expect(browserRequests.some(({ url, method }) => method === "DELETE" && url.includes(`/api/tasks/${taskId}?history=keep`))).toBe(true);
+    expect(browserRequests.some(({ url }) => url.includes(`/api/history/tasks/${taskId}/reports?limit=25`))).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: "归档任务" }));
+    fireEvent.click(await screen.findByRole("link", { name: new RegExp(title) }));
+    await screen.findByText("归档任务 · 只读");
+    fireEvent.click(screen.getByRole("button", { name: "清除归档及全部历史" }));
+    await screen.findByText("还没有归档任务。");
+    expect(confirm).toHaveBeenCalledTimes(3);
+    const removedArchive = await nativeFetch(new URL(`/api/history/tasks/${taskId}`, apiOrigin), { headers: testHeaders() });
+    expect(removedArchive.status).toBe(404);
+    const removedActivities = await nativeFetch(new URL(`/api/activity?task_id=${taskId}`, apiOrigin), { headers: testHeaders() });
+    expect((await removedActivities.json() as { total: number }).total).toBe(0);
+    expect(browserRequests.some(({ url, method }) => method === "DELETE" && url.endsWith(`/api/history/tasks/${taskId}`))).toBe(true);
+  });
+
+  it("filters and deletes one real activity, then clears current task history while keeping the task", async () => {
+    await enterWorkspace();
+    const title = `E2E Activity ${Date.now()}`;
+    const created = await nativeFetch(new URL("/api/tasks", apiOrigin), {
+      method: "POST",
+      headers: { ...testHeaders(), "Content-Type": "application/json" },
+      body: JSON.stringify({ title, description: "Current task retained after its report history is cleared." }),
+    });
+    expect(created.status).toBe(201);
+    const createdTask = await created.json() as { task: { id: string } };
+    const taskId = createdTask.task.id;
+    const report = await nativeFetch(new URL(`/api/tasks/${taskId}/reports`, apiOrigin), {
+      method: "POST",
+      headers: { ...testHeaders(), "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "This report is cleared with task history." }),
+    });
+    expect(report.status).toBe(201);
+
+    fireEvent.click(screen.getAllByRole("link", { name: "历史" })[0]);
+    await screen.findByRole("heading", { name: "历史" });
+    fireEvent.click(screen.getByRole("button", { name: "活动记录" }));
+    await screen.findByText("新增工作汇报");
+    fireEvent.change(screen.getByLabelText("按活动类型筛选"), { target: { value: "report.created" } });
+    fireEvent.change(screen.getByLabelText("按来源筛选"), { target: { value: "user" } });
+    fireEvent.change(screen.getByLabelText("任务 ID"), { target: { value: taskId } });
+    fireEvent.click(screen.getByRole("button", { name: "筛选" }));
+    await screen.findByText(title);
+    expect(screen.getAllByText("新增工作汇报").length).toBeGreaterThan(1);
+    expect(screen.getByText(title)).toBeTruthy();
+
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    fireEvent.click(screen.getByRole("button", { name: "删除此活动" }));
+    await screen.findByText("没有符合条件的活动记录。");
+    expect(confirm).toHaveBeenCalledWith("只删除这条活动记录？任务和工作汇报会保留。");
+    const reportsAfterSingleDelete = await nativeFetch(new URL(`/api/tasks/${taskId}/reports`, apiOrigin), { headers: testHeaders() });
+    expect((await reportsAfterSingleDelete.json() as { total: number }).total).toBe(1);
+
+    fireEvent.change(screen.getByLabelText("按活动类型筛选"), { target: { value: "" } });
+    fireEvent.click(await screen.findByRole("button", { name: "清除任务全部历史" }));
+    await screen.findByText("没有符合条件的活动记录。");
+    expect(confirm).toHaveBeenCalledTimes(3);
+    const retainedTask = await nativeFetch(new URL(`/api/tasks/${taskId}`, apiOrigin), { headers: testHeaders() });
+    expect(retainedTask.status).toBe(200);
+    const reportsAfterClear = await nativeFetch(new URL(`/api/tasks/${taskId}/reports`, apiOrigin), { headers: testHeaders() });
+    expect((await reportsAfterClear.json() as { total: number }).total).toBe(0);
+    const activitiesAfterClear = await nativeFetch(new URL(`/api/activity?task_id=${taskId}`, apiOrigin), { headers: testHeaders() });
+    expect((await activitiesAfterClear.json() as { total: number }).total).toBe(0);
+    expect(browserRequests.some(({ url }) => url.endsWith(`/api/activity?limit=25&offset=0&event_type=report.created&source=user&task_id=${taskId}`))).toBe(true);
+    expect(browserRequests.some(({ url, method }) => method === "DELETE" && url.endsWith(`/api/history/tasks/${taskId}`))).toBe(true);
+  });
+
+  it("permanently deletes a current task and its history through the explicit UI option", async () => {
+    await enterWorkspace();
+    const title = `E2E Permanent delete ${Date.now()}`;
+    fireEvent.click(screen.getAllByRole("link", { name: "任务" })[0]);
+    await screen.findByRole("heading", { name: "任务" });
+    fireEvent.change(screen.getByLabelText("新任务标题"), { target: { value: title } });
+    fireEvent.click(screen.getByRole("button", { name: "创建任务" }));
+    await screen.findByRole("heading", { name: title });
+    const currentTaskResponse = await nativeFetch(new URL("/api/tasks?q=" + encodeURIComponent(title), apiOrigin), { headers: testHeaders() });
+    const taskPage = await currentTaskResponse.json() as { tasks: Array<{ id: string }> };
+    const taskId = taskPage.tasks[0]?.id;
+    if (!taskId) throw new Error("The UI-created task was missing from the current task API");
+
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    fireEvent.click(screen.getByRole("button", { name: "删除任务" }));
+    fireEvent.click(screen.getByRole("button", { name: "删除任务及历史记录" }));
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining("任务、全部工作汇报和活动会立即永久删除"));
+    await screen.findByText("这里还没有任务。");
+    const removedTask = await nativeFetch(new URL(`/api/tasks/${taskId}`, apiOrigin), { headers: testHeaders() });
+    expect(removedTask.status).toBe(404);
+    const removedArchive = await nativeFetch(new URL(`/api/history/tasks/${taskId}`, apiOrigin), { headers: testHeaders() });
+    expect(removedArchive.status).toBe(404);
+    const removedActivities = await nativeFetch(new URL(`/api/activity?task_id=${taskId}`, apiOrigin), { headers: testHeaders() });
+    expect((await removedActivities.json() as { total: number }).total).toBe(0);
+    expect(browserRequests.some(({ url, method }) => method === "DELETE" && url.includes(`/api/tasks/${taskId}?history=delete`))).toBe(true);
   });
 
   it("preserves task filters in the URL and filters through the backend", async () => {
@@ -182,11 +388,7 @@ describe("Tasklutein browser workflow over the real FastAPI HTTP API", () => {
     const title = `E2E Search 50%_exact ${Date.now()}`;
     const response = await nativeFetch(new URL("/api/tasks", apiOrigin), {
       method: "POST",
-        headers: {
-          Authorization: "Bearer " + webToken,
-          "X-Tasklutein-Gateway": gatewayToken,
-          "Content-Type": "application/json",
-        },
+        headers: { ...testHeaders(), "Content-Type": "application/json" },
       body: JSON.stringify({ title, status: "done" }),
     });
     expect(response.status).toBe(201);
@@ -210,18 +412,14 @@ describe("Tasklutein browser workflow over the real FastAPI HTTP API", () => {
     for (let index = 0; index < 26; index += 1) {
       const response = await nativeFetch(new URL("/api/tasks", apiOrigin), {
         method: "POST",
-        headers: {
-          Authorization: "Bearer " + webToken,
-          "X-Tasklutein-Gateway": gatewayToken,
-          "Content-Type": "application/json",
-        },
+        headers: { ...testHeaders(), "Content-Type": "application/json" },
         body: JSON.stringify({ title: `${marker} ${index}` }),
       });
       expect(response.status).toBe(201);
     }
 
     const pageResponse = await nativeFetch(new URL("/api/tasks?limit=25&offset=25", apiOrigin), {
-      headers: { Authorization: "Bearer " + webToken, "X-Tasklutein-Gateway": gatewayToken },
+      headers: testHeaders(),
     });
     const page = await pageResponse.json() as { tasks: Array<{ title: string }>; total: number };
     expect(page.total).toBe(26);
@@ -234,10 +432,74 @@ describe("Tasklutein browser workflow over the real FastAPI HTTP API", () => {
     expect(screen.getByRole("button", { name: "上一页" }).hasAttribute("disabled")).toBe(false);
   });
 
+  it("creates, lists, displays once, and revokes a personal Agent key through real HTTP", async () => {
+    await enterWorkspace();
+    fireEvent.click(screen.getAllByRole("link", { name: "设置" })[0]);
+    await screen.findByRole("heading", { name: "设置" });
+    expect(screen.getAllByText(testEmail)).toHaveLength(2);
+
+    fireEvent.change(screen.getByLabelText("名称"), { target: { value: "Browser integration key" } });
+    fireEvent.click(screen.getByRole("button", { name: "创建密钥" }));
+    const onceMessage = await screen.findByText("密钥仅显示这一次");
+    const secretMessage = onceMessage.parentElement;
+    if (!secretMessage) throw new Error("The one-time key notice did not contain its secret value");
+    expect(secretMessage.textContent).toContain("密钥仅显示这一次");
+    const secret = secretMessage.querySelector("code")?.textContent;
+    expect(secret).toBeTruthy();
+
+    const listed = await nativeFetch(new URL("/api/agent-tokens", apiOrigin), { headers: testHeaders() });
+    const listing = await listed.json() as { tokens: Array<{ id: string; name: string; prefix: string }> };
+    expect(listing.tokens).toHaveLength(1);
+    expect(listing.tokens[0].name).toBe("Browser integration key");
+    const displayPrefix = secret?.slice(0, 7);
+    expect(listing.tokens[0].prefix).toBe(displayPrefix);
+    expect(JSON.stringify(listing)).not.toContain(secret);
+    await screen.findByText(displayPrefix ?? "");
+
+    fireEvent.click(screen.getByRole("button", { name: "关闭" }));
+    expect(document.body.textContent).not.toContain(secret);
+
+    fireEvent.click(await screen.findByRole("button", { name: "编辑" }));
+    fireEvent.change(screen.getByLabelText("编辑密钥名称"), { target: { value: "Renamed browser key" } });
+    const futureExpiry = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000);
+    const localExpiry = new Date(futureExpiry.getTime() - futureExpiry.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+    fireEvent.change(screen.getByLabelText("编辑密钥过期时间"), { target: { value: localExpiry } });
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    await screen.findByText("Renamed browser key");
+    const editedTokens = await nativeFetch(new URL("/api/agent-tokens", apiOrigin), { headers: testHeaders() });
+    const editedListing = await editedTokens.json() as { tokens: Array<{ id: string; name: string; prefix: string; expires_at: string | null }> };
+    expect(editedListing.tokens[0]).toMatchObject({ id: listing.tokens[0].id, name: "Renamed browser key", prefix: displayPrefix });
+    expect(editedListing.tokens[0].expires_at).toEqual(expect.any(String));
+    expect(JSON.stringify(editedListing)).not.toContain(secret);
+
+    fireEvent.click(await screen.findByRole("button", { name: "撤销" }));
+    await screen.findByText(/已撤销/);
+    const revokedRow = screen.getByText(displayPrefix ?? "").closest("li");
+    expect(revokedRow?.textContent).toContain("Renamed browser key");
+    expect(revokedRow?.textContent).toContain("已撤销");
+    expect(revokedRow?.querySelector("button")).toBeNull();
+    const revokedTokens = await nativeFetch(new URL("/api/agent-tokens", apiOrigin), { headers: testHeaders() });
+    const revokedListing = await revokedTokens.json() as { tokens: Array<{ id: string; revoked_at: string | null }> };
+    expect(revokedListing.tokens).toHaveLength(1);
+    expect(revokedListing.tokens[0]).toMatchObject({ id: listing.tokens[0].id, revoked_at: expect.any(String) });
+  });
+
   it("shares the same FastAPI data and attribution through real HTTP MCP tools", async () => {
     await enterWorkspace();
     const mcpPort = await freePort();
-    const mcpServer = createHttpMcpServer({ apiBase: apiOrigin, agentToken, gatewayToken });
+    const createdKey = await nativeFetch(new URL("/api/agent-tokens", apiOrigin), {
+      method: "POST",
+      headers: { ...testHeaders(), "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "browser test MCP" }),
+    });
+    const keyResult = await createdKey.json() as { secret: string };
+    if (createdKey.status !== 201) throw new Error("Could not create an isolated Agent key for MCP integration test");
+    const agentToken = keyResult.secret;
+    const mcpServer = createHttpMcpServer({
+      apiBase: apiOrigin,
+      gatewayToken,
+      allowedOrigins: ["http://localhost:5173"],
+    });
     await new Promise<void>((resolveListen, rejectListen) => {
       mcpServer.once("error", rejectListen);
       mcpServer.listen(mcpPort, "127.0.0.1", resolveListen);
@@ -250,6 +512,7 @@ describe("Tasklutein browser workflow over the real FastAPI HTTP API", () => {
           Authorization: "Bearer " + agentToken,
           "X-Tasklutein-Gateway": gatewayToken,
           "X-Request-ID": randomUUID(),
+          Origin: `http://127.0.0.1:${mcpPort}`,
         },
       },
     });
@@ -276,8 +539,7 @@ describe("Tasklutein browser workflow over the real FastAPI HTTP API", () => {
       const userReport = await nativeFetch(new URL(`/api/tasks/${createdValue.task.id}/reports`, apiOrigin), {
         method: "POST",
         headers: {
-          Authorization: "Bearer " + webToken,
-          "X-Tasklutein-Gateway": gatewayToken,
+          ...testHeaders(),
           "Content-Type": "application/json",
         },
         body: JSON.stringify({ content: "Written through FastAPI with the Web credential." }),
@@ -310,11 +572,20 @@ describe("Tasklutein browser workflow over the real FastAPI HTTP API", () => {
     }
   });
 
-  it("clears an expired session when the authenticated backend returns 401", async () => {
-    sessionStorage.setItem("tasklutein_token", "expired-local-token");
-    render(createElement(App));
-    await screen.findByLabelText("工作空间访问令牌");
-    expect(sessionStorage.getItem("tasklutein_token")).toBeNull();
-    expect(screen.getByRole("status").textContent).toContain("令牌已失效");
+  it("formats a real FastAPI validation error without exposing rejected input", async () => {
+    await enterWorkspace();
+    const error = await api("/tasks", {
+      method: "POST",
+      body: JSON.stringify({ title: "Valid title", source: "forged" }),
+    }).then(
+      () => { throw new Error("FastAPI accepted an unexpected task field"); },
+      (reason: unknown) => reason,
+    );
+
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error).toMatchObject({ status: 422, code: "validation_error" });
+    expect((error as ApiError).message).toContain("body.source: Extra inputs are not permitted");
+    expect((error as ApiError).message).not.toContain("forged");
   });
+
 });

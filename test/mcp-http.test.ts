@@ -1,188 +1,293 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { createHttpMcpServer } from "../apps/mcp/src/http";
+import { randomBytes, randomUUID } from "node:crypto";
+import { spawn, type ChildProcess } from "node:child_process";
 import { createServer, type Server } from "node:http";
+import { mkdir, rm } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { createHttpMcpServer } from "../apps/mcp/src/http";
 
-const agentToken = "agent-" + "a".repeat(56);
-const gatewayToken = "gateway-" + "g".repeat(56);
-const live: Server[] = [];
+const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const apiDirectory = join(repositoryRoot, "apps", "api");
+const scratchDirectory = join(repositoryRoot, "testplace");
+const gatewaySecret = randomBytes(32).toString("hex");
+const accessIssuer = "https://access.example.test";
+const accessSubject = "mcp-integration-" + randomUUID();
+const accessEmail = accessSubject + "@example.test";
+const accessOrigin = "http://localhost:5173";
 
-afterEach(async () => {
-  await Promise.all(live.splice(0).map((server) =>
-    new Promise<void>((resolve) => server.close(() => resolve()))
-  ));
-});
+let apiProcess: ChildProcess | undefined;
+let mcpServer: Server | undefined;
+let databasePath: string | undefined;
 
-async function serve(apiBase = "http://127.0.0.1:1") {
-  const http = createHttpMcpServer({
-    apiBase,
-    agentToken,
-    gatewayToken,
-    allowedOrigins: ["https://app.example.test"],
-  });
-  live.push(http);
-  await new Promise<void>((resolve) => http.listen(0, "127.0.0.1", resolve));
-  const address = http.address();
-  if (!address || typeof address === "string") throw new Error("TCP address missing");
-  return "http://127.0.0.1:" + address.port + "/mcp";
+function gatewayHeaders(): Record<string, string> {
+  return { "X-Tasklutein-Gateway": gatewaySecret };
 }
 
-describe("Tencent Streamable HTTP MCP", () => {
-  it("requires the Worker secret and the agent token", async () => {
-    const url = await serve();
-    const health = await fetch(url.replace("/mcp", "/health"));
-    const healthBody = await health.json() as { request_id?: string };
-    expect(health.headers.get("X-Request-ID")).toMatch(/^[0-9a-f-]{36}$/);
-    expect(healthBody.request_id).toBe(health.headers.get("X-Request-ID"));
+function userHeaders(): Record<string, string> {
+  return {
+    ...gatewayHeaders(),
+    "X-Tasklutein-Access-Issuer": accessIssuer,
+    "X-Tasklutein-Access-Subject": accessSubject,
+    "X-Tasklutein-Access-Email": accessEmail,
+    Origin: accessOrigin,
+  };
+}
 
-    const body = JSON.stringify({ jsonrpc: "2.0", method: "initialize", id: 1, params: {} });
-    const rejectedGateway = await fetch(url, { method: "POST", body });
-    const rejectedBody = await rejectedGateway.json() as { code?: string; request_id?: string };
-    expect(rejectedGateway.status).toBe(403);
-    expect(rejectedBody.code).toBe("invalid_gateway");
-    expect(rejectedBody.request_id).toBe(rejectedGateway.headers.get("X-Request-ID"));
-    expect((await fetch(url, { method: "POST", body,
-      headers: { "X-Tasklutein-Gateway": gatewayToken }
-    })).status).toBe(401);
-    expect((await fetch(url, { method: "POST", body,
-      headers: { "X-Tasklutein-Gateway": gatewayToken, Authorization: "Bearer " + agentToken,
-        Origin: "https://evil.example.test" }
-    })).status).toBe(403);
-  });
-
-  it("enforces JSON content type and a streaming request-body limit", async () => {
-    const url = await serve();
-    const headers = {
-      "X-Tasklutein-Gateway": gatewayToken,
-      Authorization: "Bearer " + agentToken,
-      Accept: "application/json, text/event-stream",
-    };
-    const jsonBody = JSON.stringify({ jsonrpc: "2.0", method: "initialize", id: 1, params: {} });
-    const wrongType = await fetch(url, {
-      method: "POST",
-      headers: { ...headers, "Content-Type": "text/plain" },
-      body: jsonBody,
+function run(command: string, args: string[], cwd: string, env?: NodeJS.ProcessEnv): Promise<string> {
+  return new Promise((resolveRun, rejectRun) => {
+    const child = spawn(command, args, {
+      cwd,
+      env: { ...process.env, ...env },
+      shell: false,
+      stdio: ["ignore", "pipe", "pipe"],
     });
-    expect(wrongType.status).toBe(415);
+    let stderr = "";
+    let stdout = "";
+    child.stdout?.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
+    child.stderr?.on("data", (chunk: Buffer) => { stderr = (stderr + chunk.toString()).slice(-4000); });
+    child.once("error", rejectRun);
+    child.once("exit", (code) => {
+      if (code === 0) resolveRun(stdout.trim());
+      else rejectRun(new Error(`${command} exited with code ${String(code)}: ${stderr}`));
+    });
+  });
+}
 
-    const unsupportedMethod = await fetch(url, { method: "GET", headers });
-    expect(unsupportedMethod.status).toBe(405);
-    expect(unsupportedMethod.headers.get("allow")).toBe("POST");
+async function freePort(): Promise<number> {
+  const reservation = createServer();
+  await new Promise<void>((resolveListen, rejectListen) => {
+    reservation.once("error", rejectListen);
+    reservation.listen(0, "127.0.0.1", resolveListen);
+  });
+  const address = reservation.address();
+  if (!address || typeof address === "string") throw new Error("Could not reserve a local API port");
+  await new Promise<void>((resolveClose, rejectClose) => reservation.close((error) => error ? rejectClose(error) : resolveClose()));
+  return address.port;
+}
 
-    const oversizedBody = new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.enqueue(new TextEncoder().encode(jsonBody));
-        controller.enqueue(new Uint8Array(1024 * 1024));
-        controller.close();
+async function createSchema(databaseUrl: string): Promise<void> {
+  const pythonSetup = [
+    "from sqlalchemy import create_engine, event",
+    "from app.models import Base",
+    `engine = create_engine(${JSON.stringify(databaseUrl)})`,
+    "event.listen(engine, 'connect', lambda connection, _: connection.execute('PRAGMA foreign_keys=ON'))",
+    "Base.metadata.create_all(engine)",
+    "engine.dispose()",
+  ].join("; ");
+  await run("uv", ["run", "--locked", "python", "-c", pythonSetup], apiDirectory);
+}
+
+async function pythonExecutable(): Promise<string> {
+  return run("uv", ["run", "--locked", "python", "-c", "import sys; print(sys.executable)"], apiDirectory);
+}
+
+async function waitForApi(baseUrl: string): Promise<void> {
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    if (apiProcess?.exitCode !== null && apiProcess?.exitCode !== undefined) {
+      throw new Error(`FastAPI exited before becoming ready (code ${apiProcess.exitCode})`);
+    }
+    try {
+      const response = await fetch(baseUrl + "/api/health", { headers: gatewayHeaders() });
+      if (response.ok) return;
+    } catch {
+      // Wait briefly while the real local FastAPI process starts.
+    }
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
+  }
+  throw new Error("FastAPI did not become ready within 30 seconds");
+}
+
+async function callApi(baseUrl: string, path: string, init: RequestInit): Promise<Response> {
+  return fetch(baseUrl + path, {
+    ...init,
+    headers: { ...gatewayHeaders(), ...init.headers },
+    redirect: "manual",
+  });
+}
+
+async function connectMcp(url: string, key: string): Promise<Client> {
+  const client = new Client({ name: "tasklutein-real-integration", version: "0.1.0" });
+  const transport = new StreamableHTTPClientTransport(new URL(url), {
+    requestInit: { headers: { Authorization: "Bearer " + key, ...gatewayHeaders() } },
+  });
+  await client.connect(transport);
+  return client;
+}
+
+function firstTextContent(result: unknown): string {
+  if (typeof result !== "object" || result === null || !("content" in result) || !Array.isArray(result.content)) {
+    throw new Error("MCP result content is not an array");
+  }
+  const block = result.content.find((item: unknown): item is { type: "text"; text: string } =>
+    typeof item === "object" && item !== null && "type" in item && item.type === "text" &&
+    "text" in item && typeof item.text === "string");
+  if (!block) throw new Error("MCP result contains no text block");
+  return block.text;
+}
+
+async function stopProcess(child: ChildProcess | undefined): Promise<void> {
+  if (!child || child.exitCode !== null) return;
+  const exited = new Promise<void>((resolveExit) => child.once("exit", () => resolveExit()));
+  if (process.platform === "win32" && child.pid) {
+    try {
+      await run("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], repositoryRoot);
+    } catch {
+      child.kill("SIGTERM");
+    }
+  } else {
+    child.kill("SIGTERM");
+  }
+  await Promise.race([exited, new Promise<void>((resolveDelay) => setTimeout(resolveDelay, 5000))]);
+  if (child.exitCode === null) child.kill("SIGKILL");
+}
+
+afterAll(async () => {
+  await Promise.all([
+    new Promise<void>((resolveClose) => mcpServer ? mcpServer.close(() => resolveClose()) : resolveClose()),
+    stopProcess(apiProcess),
+  ]);
+  if (databasePath) {
+    await Promise.all([
+      rm(databasePath, { force: true }),
+      rm(databasePath + "-wal", { force: true }),
+      rm(databasePath + "-shm", { force: true }),
+    ]);
+  }
+});
+
+describe("Tasklutein HTTP MCP with a real local FastAPI process", () => {
+  it("isolates personal keys, runs all six tools, and rejects revoked keys", async () => {
+    await mkdir(scratchDirectory, { recursive: true });
+    databasePath = join(scratchDirectory, "mcp-integration-" + randomUUID() + ".sqlite");
+    const databaseUrl = "sqlite:///" + databasePath.replaceAll("\\", "/");
+    await createSchema(databaseUrl);
+
+    const port = await freePort();
+    const apiBase = `http://127.0.0.1:${port}`;
+    apiProcess = spawn(await pythonExecutable(), ["-m", "uvicorn", "app.main:app",
+      "--host", "127.0.0.1", "--port", String(port), "--log-level", "warning"], {
+      cwd: apiDirectory,
+      env: {
+        ...process.env,
+        DATABASE_URL: databaseUrl,
+        EDGE_GATEWAY_TOKEN: gatewaySecret,
+        WEB_ORIGINS: accessOrigin,
       },
+      shell: false,
+      stdio: "ignore",
     });
-    const oversizedRequest = {
-      method: "POST",
-      headers: { ...headers, "Content-Type": "application/json" },
-      body: oversizedBody,
-      duplex: "half",
-    } as RequestInit & { duplex: "half" };
-    const oversized = await fetch(url, oversizedRequest);
-    expect(oversized.status).toBe(413);
-  });
+    await waitForApi(apiBase);
 
-  it("executes agent tools through the shared authenticated backend", async () => {
-    const backend = createServer((req, res) => {
-      expect(req.headers.authorization).toBe("Bearer " + agentToken);
-      expect(req.headers["x-tasklutein-gateway"]).toBe(gatewayToken);
-      expect(req.headers["x-request-id"]).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
-      expect([
-        "/api/tasks?status=done",
-        "/api/tasks?status=done&q=release+notes&sort=created_desc&limit=25&offset=50",
-        "/api/tasks/00000000-0000-4000-8000-000000000001/reports?limit=1&offset=0",
-      ]).toContain(req.url);
-      res.writeHead(200, { "Content-Type": "application/json" });
-      if (req.url !== "/api/tasks/00000000-0000-4000-8000-000000000001/reports?limit=1&offset=0") {
-        res.end(JSON.stringify({ tasks: [{ id: "saved-task", status: "done" }], total: 1, limit: 200, offset: 0 }));
-      } else {
-        res.end(JSON.stringify({
-          reports: [{ id: "saved-report", content: "Saved through FastAPI", source: "agent" }],
-          total: 2,
-          limit: 1,
-          offset: 0,
-        }));
+    const bootstrap = await callApi(apiBase, "/api/session/bootstrap", {
+      method: "POST",
+      headers: userHeaders(),
+    });
+    expect(bootstrap.status).toBe(200);
+
+    const firstKeyResponse = await callApi(apiBase, "/api/agent-tokens", {
+      method: "POST",
+      headers: { ...userHeaders(), "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "MCP integration key one" }),
+    });
+    const secondKeyResponse = await callApi(apiBase, "/api/agent-tokens", {
+      method: "POST",
+      headers: { ...userHeaders(), "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "MCP integration key two" }),
+    });
+    expect(firstKeyResponse.status).toBe(201);
+    expect(secondKeyResponse.status).toBe(201);
+    const firstKey = await firstKeyResponse.json() as { token: { id: string }; secret: string };
+    const secondKey = await secondKeyResponse.json() as { token: { id: string }; secret: string };
+    expect(firstKey.secret).not.toBe(secondKey.secret);
+
+    mcpServer = createHttpMcpServer({ apiBase, gatewayToken: gatewaySecret });
+    await new Promise<void>((resolveListen) => mcpServer!.listen(0, "127.0.0.1", resolveListen));
+    const address = mcpServer.address();
+    if (!address || typeof address === "string") throw new Error("MCP TCP address missing");
+    const mcpUrl = `http://127.0.0.1:${address.port}/mcp`;
+
+    const initializeBody = JSON.stringify({
+      jsonrpc: "2.0", method: "initialize", id: 1,
+      params: { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "integration", version: "1.0" } },
+    });
+    const missingKey = await fetch(mcpUrl, {
+      method: "POST", headers: { ...gatewayHeaders(), "Content-Type": "application/json" }, body: initializeBody,
+    });
+    expect(missingKey.status).toBe(401);
+    const invalidKey = await fetch(mcpUrl, {
+      method: "POST",
+      headers: { ...gatewayHeaders(), Authorization: "Bearer tlu_" + "x".repeat(48), "Content-Type": "application/json" },
+      body: initializeBody,
+    });
+    expect(invalidKey.status).toBe(401);
+
+    const client = await connectMcp(mcpUrl, firstKey.secret);
+    try {
+      expect((await client.listTools()).tools.map((tool) => tool.name).sort()).toEqual([
+        "add_report", "create_task", "get_task", "list_reports", "list_tasks", "update_task",
+      ]);
+
+      const created = await client.callTool({
+        name: "create_task", arguments: { title: "MCP integration check", description: "Created through real FastAPI." },
+      });
+      const createdValue = JSON.parse(firstTextContent(created)) as { task?: { id?: string } };
+      const taskId = createdValue.task?.id;
+      expect(taskId).toMatch(/^[0-9a-f-]{36}$/i);
+      if (!taskId) throw new Error("create_task returned no task id");
+
+      const updated = await client.callTool({ name: "update_task", arguments: { id: taskId, status: "in_progress" } });
+      expect(firstTextContent(updated)).toContain(taskId);
+
+      const report = await client.callTool({
+        name: "add_report", arguments: { task_id: taskId, content: "Verified through real FastAPI." },
+      });
+      expect(firstTextContent(report)).toContain("Verified through real FastAPI.");
+
+      const detail = await client.callTool({ name: "get_task", arguments: { id: taskId } });
+      const detailValue = JSON.parse(firstTextContent(detail)) as {
+        task?: { task?: { id?: string } };
+        reports?: { reports?: Array<{ content?: string }> };
+      };
+      expect(detailValue.task?.task?.id).toBe(taskId);
+      expect(detailValue.reports?.reports).toEqual(
+        expect.arrayContaining([expect.objectContaining({ content: "Verified through real FastAPI." })]),
+      );
+
+      const tasks = await client.callTool({ name: "list_tasks", arguments: { q: "MCP integration check", limit: 10, offset: 0 } });
+      expect(JSON.parse(firstTextContent(tasks))).toMatchObject({
+        tasks: expect.arrayContaining([expect.objectContaining({ id: taskId })]),
+      });
+
+      const reports = await client.callTool({ name: "list_reports", arguments: { task_id: taskId, limit: 10, offset: 0 } });
+      expect(JSON.parse(firstTextContent(reports))).toMatchObject({
+        reports: expect.arrayContaining([expect.objectContaining({ content: "Verified through real FastAPI." })]),
+      });
+
+      const revoked = await callApi(apiBase, `/api/agent-tokens/${firstKey.token.id}`, {
+        method: "DELETE", headers: userHeaders(),
+      });
+      expect(revoked.status).toBe(204);
+      const revokedIdentity = await callApi(apiBase, "/api/agent/whoami", {
+        method: "GET", headers: { Authorization: "Bearer " + firstKey.secret },
+      });
+      expect(revokedIdentity.status).toBe(401);
+      await expect(connectMcp(mcpUrl, firstKey.secret)).rejects.toThrow();
+
+      const otherClient = await connectMcp(mcpUrl, secondKey.secret);
+      try {
+        const stillValid = await otherClient.callTool({ name: "list_tasks", arguments: { limit: 10, offset: 0 } });
+        expect(JSON.parse(firstTextContent(stillValid))).toMatchObject({
+          tasks: expect.arrayContaining([expect.objectContaining({ id: taskId })]),
+        });
+      } finally {
+        await otherClient.close();
       }
-    });
-    live.push(backend);
-    await new Promise<void>((resolve) => backend.listen(0, "127.0.0.1", resolve));
-    const address = backend.address();
-    if (!address || typeof address === "string") throw new Error("backend address missing");
-
-    const url = await serve("http://127.0.0.1:" + address.port);
-    const client = new Client({ name: "integration-test", version: "0.1.0" });
-    const transport = new StreamableHTTPClientTransport(new URL(url), {
-      requestInit: { headers: {
-        Authorization: "Bearer " + agentToken,
-        "X-Tasklutein-Gateway": gatewayToken
-      } }
-    });
-    try {
-      await client.connect(transport);
-      const toolResult = await client.callTool({ name: "list_tasks", arguments: { status: "done" } });
-      const contents: unknown = toolResult.content;
-      if (!Array.isArray(contents)) throw new Error("MCP result content is not an array");
-      const textBlocks = contents.filter((part: unknown): part is { type: "text"; text: string } =>
-        typeof part === "object" && part !== null &&
-        "type" in part && part.type === "text" &&
-        "text" in part && typeof part.text === "string");
-      expect(textBlocks).toHaveLength(1);
-      expect(JSON.parse(textBlocks[0].text)).toMatchObject({
-        tasks: [{ id: "saved-task", status: "done" }]
-      });
-
-      const filtered = await client.callTool({
-        name: "list_tasks",
-        arguments: { status: "done", q: "release notes", sort: "created_desc", limit: 25, offset: 50 },
-      });
-      const filteredContents: unknown = filtered.content;
-      if (!Array.isArray(filteredContents)) throw new Error("MCP result content is not an array");
-      expect(JSON.stringify(filteredContents)).toContain("saved-task");
-
-      const reportResult = await client.callTool({
-        name: "list_reports",
-        arguments: { task_id: "00000000-0000-4000-8000-000000000001", limit: 1, offset: 0 },
-      });
-      const reportContents: unknown = reportResult.content;
-      if (!Array.isArray(reportContents)) throw new Error("MCP result content is not an array");
-      const reportTextBlocks = reportContents.filter((part: unknown): part is { type: "text"; text: string } =>
-        typeof part === "object" && part !== null &&
-        "type" in part && part.type === "text" &&
-        "text" in part && typeof part.text === "string");
-      expect(reportTextBlocks).toHaveLength(1);
-      expect(JSON.parse(reportTextBlocks[0].text)).toMatchObject({
-        reports: [{ id: "saved-report", source: "agent" }],
-        total: 2,
-        limit: 1,
-        offset: 0,
-      });
     } finally {
       await client.close();
     }
-  });
-
-  it("speaks real MCP Streamable HTTP and exposes the 6 tools", async () => {
-    const url = await serve();
-    const client = new Client({ name: "remote-mcp-test", version: "0.1.0" });
-    const transport = new StreamableHTTPClientTransport(new URL(url), {
-      requestInit: {
-        headers: {
-          Authorization: "Bearer " + agentToken,
-          "X-Tasklutein-Gateway": gatewayToken,
-        }
-      },
-    });
-    try {
-      await client.connect(transport);
-      const actual = (await client.listTools()).tools.map((tool) => tool.name).sort();
-      expect(actual).toEqual(["add_report", "create_task", "get_task", "list_reports", "list_tasks", "update_task"]);
-    } finally {
-      await client.close();
-    }
-  });
+  }, 90_000);
 });

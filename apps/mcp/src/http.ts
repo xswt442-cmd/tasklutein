@@ -9,7 +9,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { createTaskluteinMcpServer, type McpApiConfig } from "./server";
 
-export type HttpMcpConfig = McpApiConfig & {
+export type HttpMcpConfig = Omit<McpApiConfig, "agentToken"> & {
   gatewayToken: string;
   allowedOrigins?: string[];
 };
@@ -32,9 +32,8 @@ function error(res: ServerResponse, status: number, detail: string, requestId: s
 }
 
 export function createHttpMcpServer(config: HttpMcpConfig): Server {
-  if (config.agentToken.length < 32 || config.gatewayToken.length < 32 ||
-      config.agentToken.startsWith("REPLACE_WITH") || config.gatewayToken.startsWith("REPLACE_WITH")) {
-    throw new Error("MCP requires strong agent and origin gateway secrets");
+  if (config.gatewayToken.length < 32 || config.gatewayToken.startsWith("REPLACE_WITH")) {
+    throw new Error("MCP requires a strong origin gateway secret");
   }
 
   return createServer(async (req: IncomingMessage, res: ServerResponse) => {
@@ -60,12 +59,13 @@ export function createHttpMcpServer(config: HttpMcpConfig): Server {
       return;
     }
     const authorization = req.headers.authorization ?? "";
-    if (!authorization.startsWith("Bearer ") ||
-        !sameSecret(authorization.slice(7), config.agentToken)) {
+    const match = /^Bearer ([^\s]+)$/.exec(authorization);
+    if (!match || match[1].length < 32 || match[1].startsWith("REPLACE_WITH")) {
       res.setHeader("WWW-Authenticate", "Bearer");
       error(res, 401, "unauthorized", requestId);
       return;
     }
+    const agentToken = match[1];
 
     // Deny unapproved browser Origin headers (MCP DNS rebinding guidance).
     const requestOrigin = req.headers.origin;
@@ -84,13 +84,40 @@ export function createHttpMcpServer(config: HttpMcpConfig): Server {
       return;
     }
 
+    let identity: Response;
+    try {
+      identity = await fetch(config.apiBase.replace(/\/$/, "") + "/api/agent/whoami", {
+        method: "GET",
+        headers: {
+          Authorization: "Bearer " + agentToken,
+          "X-Tasklutein-Gateway": config.gatewayToken,
+          "X-Request-ID": requestId,
+        },
+        redirect: "manual",
+      });
+    } catch {
+      error(res, 502, "identity_service_unavailable", requestId);
+      return;
+    }
+    if (!identity.ok) {
+      res.setHeader("WWW-Authenticate", "Bearer");
+      error(res, 401, "unauthorized", requestId);
+      return;
+    }
+    await identity.body?.cancel();
+
     // The MCP SDK owns request parsing and streaming. No body parsing here.
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
       enableJsonResponse: true,
       maxRequestBodySize: 1024 * 1024,
     });
-    const server = createTaskluteinMcpServer({ ...config, requestId });
+    const server = createTaskluteinMcpServer({
+      apiBase: config.apiBase,
+      gatewayToken: config.gatewayToken,
+      agentToken,
+      requestId,
+    });
     res.setHeader("X-Request-ID", requestId);
     res.on("close", () => {
       void server.close().catch((err: unknown) => console.error("MCP cleanup failed", err));

@@ -19,7 +19,19 @@ it("routes Worker Preview builds to the dedicated HTTPS origin", () => {
   expect(previewOrigin).toBe("https://preview-origin-tasklutein.xswt.fyi");
 });
 
-it("keeps API and MCP paths Worker-first", () => {
+it("configures the Web and MCP branch Previews with isolated Access settings", () => {
+  const previewVars = configResult.config.previews?.vars;
+  expect(previewVars).toMatchObject({
+    WEB_HOST: "dev.preview.tasklutein.xswt.fyi",
+    MCP_HOST: "mcp.preview.tasklutein.xswt.fyi",
+    ACCESS_TEAM_DOMAIN: "black-credit-e420.cloudflareaccess.com",
+    ACCESS_AUD: "ded870d0b45493adf15d058b50f77ac3f83a0e37b3c752ad2bb2eae77247413b",
+  });
+  expect(previewVars?.WEB_HOST).not.toBe(previewVars?.MCP_HOST);
+  expect(previewVars).not.toHaveProperty("ORIGIN_GATEWAY_TOKEN");
+});
+
+it("runs every request through the Worker before serving static assets", () => {
   const workerFirst = configResult.config.assets?.run_worker_first;
-  expect(workerFirst).toEqual(expect.arrayContaining(["/api", "/api/*", "/mcp", "/mcp/*"]));
+  expect(workerFirst).toBe(true);
 });

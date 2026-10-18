@@ -4,16 +4,17 @@ English · [简体中文](ARCHITECTURE.zh-CN.md)
 
 ## Components and Ownership
 
-Cloudflare **only serves the web frontend and public ingress**. The Worker serves built React files with Assets and proxies `/api/*` and `/mcp` to a fixed HTTPS Tencent origin. It never connects to PostgreSQL, runs task business rules, or hosts the MCP server.
+The Cloudflare Worker serves the React assets and public ingress. The deployment configures separate Web and MCP hostnames: the Web host serves static pages and proxies `/api/*`; the MCP host proxies only `/mcp`. The Worker does not connect to PostgreSQL, run business rules, or host the MCP server.
 
-The Tencent Cloud environment runs Docker Compose services: `api` (FastAPI/SQLAlchemy), `db` (PostgreSQL), `mcp` (Node.js/MCP SDK Streamable HTTP), `router` (Caddy), and optionally `tunnel` (cloudflared).
+The Tencent Cloud environment runs Docker Compose services: `api` (FastAPI/SQLAlchemy), `db` (PostgreSQL), `mcp` (Node.js/MCP SDK Streamable HTTP), `router` (Caddy), and optionally `tunnel` (cloudflared). Both browsers and agents reach the origin through the Worker. The MCP server calls FastAPI through REST.
 
 ```mermaid
 flowchart LR
-    Browser[Browser] --> Worker[Cloudflare Worker]
-    Remote[Remote Agent] --> Worker
-    Worker --> Assets[React Assets]
-    Worker --> Tunnel[Cloudflare Tunnel]
+    Browser[Browser] --> WebHost[Worker Web host]
+    WebHost --> Assets[React Assets]
+    WebHost -->|/api/*| Tunnel[Cloudflare Tunnel]
+    Agent[Remote Agent] --> McpHost[Worker MCP host]
+    McpHost -->|/mcp| Tunnel
     Tunnel --> Caddy
     Caddy --> API[FastAPI]
     Caddy --> MCP[MCP HTTP]
@@ -23,32 +24,46 @@ flowchart LR
     Stdio -->|REST| API
 ```
 
-## Network and Authentication Boundaries
+## Network and Identity Boundaries
 
-Web, REST, and remote MCP share one public Worker hostname. The Worker proxies only allowed paths and serves everything else through Assets. `ORIGIN_URL` comes from the trusted Worker runtime, not client input. The gateway overwrites forged `X-Tasklutein-Gateway` headers with its `ORIGIN_GATEWAY_TOKEN` secret. Browser cookies and non-allowlisted headers are dropped. Origin 3xx redirects are rejected to avoid forwarding credentials elsewhere.
+The Web and MCP services use separate Worker hostnames. The Web hostname proxies `/api` and `/api/*` to the API, serves other paths from static Assets, and rejects `/mcp`. The MCP hostname accepts only the exact `/mcp` path and returns `404` for other paths. The Worker reads the origin URL and gateway secret from its trusted runtime, replaces client-supplied `X-Tasklutein-Gateway`, removes forged internal identity headers, and rejects origin 3xx redirects.
 
-On Tencent, FastAPI and HTTP MCP first verify `EDGE_GATEWAY_TOKEN` (matching the Worker secret), then separately enforce browser/agent Bearer Tokens. FastAPI derives report authorship from authentication rather than trusting client JSON. Both browser and agent credentials currently allow full read/write access to one shared workspace, without user isolation or OAuth.
+Web users authenticate through Cloudflare Access. The Worker uses the configured Access issuer, audience, and public JWKS to verify the RS256 signature and the `iss`, `aud`, `exp`, and `sub` claims in `Cf-Access-Jwt-Assertion`; it also requires a valid `email`. The Worker sends the verified issuer, subject, and email to FastAPI in internal headers. FastAPI accepts those headers only after the origin gateway secret is verified; the Worker removes and replaces client-supplied headers with those names. The browser does not use a business Bearer token. `GET /api/health` is a health check that does not require user identity.
 
-A Cloudflare Tunnel origin hostname may be reachable directly, but without the gateway secret, FastAPI/MCP refuse access. PostgreSQL, FastAPI, and Caddy host ports bind to `127.0.0.1` only; MCP HTTP publishes no host port. Production needs independent strong random secrets, Cloudflare rate limiting, and security monitoring.
+FastAPI identifies users by Access issuer and subject and creates one personal workspace for a first-time user. Tasks, reports, Overview counts, recent activity, and Agent keys are scoped to that workspace; a task outside the caller's workspace is treated as missing. Report source, user attribution, and Agent-key attribution come from the verified identity, not client-supplied ownership fields. If the email for an existing Access identity changes, it is synchronized to the user record.
 
-## Database and API as Source of Truth
+Each user can create multiple personal Agent keys, edit their names and expiries, or revoke them independently in Settings. Plaintext is returned only once in the create response; the database stores a SHA-256 digest and short display prefix. Key lists expose only `tlu_` plus the next three characters and retain revoked rows with their revoked status. The remote MCP host requires `Authorization: Bearer <Agent key>` and validates the key through `/api/agent/whoami`. Each key accesses only its owner's personal workspace. MCP does not use the browser's Cloudflare Access session.
 
-PostgreSQL is the production source of truth. `apps/api/migrations/0001_init.sql` initializes the existing Compose volume setup; `apps/api/alembic/` contains the versioned migration baseline. Existing databases must be inspected before an operator stamps that baseline. Tasks store title, description, status, and timestamps; reports reference tasks through a cascading foreign key. FastAPI owns validation, pagination, full-workspace summaries, and all writes. MCP calls REST, preserving one business-rule boundary for browsers and agents.
+The Worker and origin separately verify `ORIGIN_GATEWAY_TOKEN` and `EDGE_GATEWAY_TOKEN` (the same value). FastAPI and HTTP MCP verify the gateway secret before business requests. PostgreSQL, FastAPI, and Caddy host ports bind to `127.0.0.1` only; the MCP HTTP port is not published on the host. A Cloudflare Tunnel hostname may be directly reachable, but API and MCP business endpoints still require the gateway secret.
+
+## Database, Isolation, and Legacy Data Migration
+
+PostgreSQL is the production source of truth. `apps/api/migrations/0001_init.sql` initializes the legacy base tables for a new volume; `apps/api/alembic/` holds versioned migrations. `0002_identity_workspace` creates user, personal-workspace, and Agent-key tables, adds a nullable workspace link to existing tasks, and adds nullable identity attribution to reports. `0003_task_workspace_required` makes the task workspace link mandatory. `0004_task_history` adds the nullable UTC `archived_at` task field and creates a workspace-scoped activity table.
+
+Migrations do not run automatically when the API starts. When upgrading an existing database, first migrate it to `0002_identity_workspace`, then have the intended owner sign in through Cloudflare Access to create that user's record and personal workspace. If unassigned tasks remain, the maintainer then explicitly sets `TASKLUTEIN_LEGACY_OWNER_ISSUER`, `TASKLUTEIN_LEGACY_OWNER_SUBJECT`, and `TASKLUTEIN_LEGACY_OWNER_EMAIL` while running `0003_task_workspace_required`, and sets `TASKLUTEIN_LEGACY_TASKS_CONFIRM` to `assign-existing-tasks`. The owner must match all three identity values, be enabled, and already have a workspace, or the migration fails. It assigns all unowned tasks to that one workspace and then makes the task workspace field non-null; it does not guess or split the old shared data. Existing task and report content and report source are preserved. Legacy reports have no recoverable user or key attribution, so `actor_user_id` and `agent_token_id` remain null. Then apply `0004_task_history`; existing tasks keep a null `archived_at` and remain current, and the migration does not fabricate activity or infer past completion times. If no unassigned tasks exist, the legacy-owner settings are not required.
+
+Tasks store title, description, status, timestamps, and workspace ID; reports reference tasks through a cascading foreign key. Tasks with a null `archived_at` appear in current lists, search, Overview, and existing MCP task tools; all of those queries exclude archived tasks. Archiving freezes the original task row, retaining its ID and all fields, along with every associated report. Archived task and report records are available only through read-only history endpoints. Clearing the history of an archived task physically deletes the task, reports, and activity; clearing history for a task that remains current deletes its reports and activity while retaining its fields and state.
+
+FastAPI writes activity in the same database transaction as each real task or report change. Event types are `task.created`, `task.updated`, `task.status_changed`, `task.deleted`, and `report.created`. A no-op task PATCH neither changes `updated_at` nor creates an event. A PATCH that changes status and other fields creates one `task.status_changed` event. Activity summaries contain only controlled changed-field and before/after status values; they do not copy task descriptions, report bodies, or secrets. Users can delete activity records, so this is business history and does not provide a tamper-proof security audit guarantee.
+
+Task updates, report creation, archiving, and whole-history cleanup lock the target task and check its archive state, preventing report writes after archive. Task data and activity share a transaction; an activity write failure rolls back the corresponding business change. FastAPI scopes history and activity queries by the M1.5 `workspace_id` and verified Principal. Reports and activities retain the verified user or Agent key ID association. On reads, `actor_name` is resolved from the associated record's current email or name, so email synchronization or key renaming changes the displayed name on older records. The system does not store a name snapshot for the time of the operation; legacy reports with unrecoverable attribution retain only their source. MCP calls REST so the browser and agents share the same business rules.
+
+After a task has been archived, an older backend that ignores `archived_at` could show it in the current list again. A rollback version must retain archive filtering and workspace isolation; removing the history schema requires separate review and cannot be done by deleting history records.
 
 ## MCP Transports and Limits
 
-`apps/mcp/src/server.ts` registers six tools, including paginated task/report readers. `index.ts` uses stdio. `http.ts` implements the Streamable HTTP server on Tencent. The HTTP transport is stateless, with an independent transport per request: suitable for scaling but no cross-request session state, server-initiated notifications, or event replay. It uses a static Bearer Token; OAuth, dynamic client registration, and public MCP Registry publication are not implemented.
+`apps/mcp/src/server.ts` provides six tools, including paginated task and report readers; `index.ts` provides the local stdio adapter; `http.ts` implements the remote Streamable HTTP server. Remote MCP uses stateless HTTP: each POST uses an independent transport and returns JSON. It has no cross-request session state, server-initiated notifications, or event replay. The HTTP server accepts POST only, with a 1 MiB request-body limit. OAuth, dynamic client registration, and public MCP Registry publication are not implemented. Clients need support for a custom Authorization header.
 
-The Worker forwards requests and streaming responses. MCP GET/SSE features depend on server transport support. The current stateless server primarily uses POST/JSON, and must not be advertised as a durable resumable SSE session server. Remote MCP clients must support custom Authorization headers.
+The Worker forwards HTTP requests and response streams to the origin. The remote MCP host is separate from the Web host; `/mcp` on the Web host is not forwarded to the MCP server. MCP GET/SSE capabilities depend on the server transport implementation; the current stateless service does not provide a durable resumable SSE session.
 
-## Code Boundaries and Extensibility
+## Code Boundaries
 
 - `apps/web/`: React interface and Vite/Tailwind build.
-- `apps/edge/`: Cloudflare Worker, HTTP gateway, and static Assets binding.
+- `apps/edge/`: Cloudflare Worker, Access JWT verification, host/path routing, HTTP gateway, and static Assets binding.
 - `apps/api/`: FastAPI application, PostgreSQL models, Alembic migrations, and API tests.
-- `apps/mcp/`: Node MCP stdio/HTTP adapters using the FastAPI REST contract.
-- `apps/api/migrations/0001_init.sql`: SQL bootstrap for a new PostgreSQL volume.
+- `apps/mcp/`: Node MCP stdio/HTTP adapters using the FastAPI REST API.
+- `apps/api/migrations/0001_init.sql`: base SQL bootstrap for a new PostgreSQL volume.
 - `deploy/`: Docker Compose, Caddy, and Tunnel configuration.
-- `scripts/` and `test/`: repository operations and cross-service integration tests.
+- `scripts/` and `test/`: repository maintenance tools and cross-service integration tests.
 
-Business rules and database access remain in FastAPI as the API and MCP services run independently behind the gateway.
+The API and MCP are separate services reached through the Worker; task business rules and database access remain in FastAPI.
