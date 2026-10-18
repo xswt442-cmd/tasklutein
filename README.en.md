@@ -48,6 +48,6 @@ Tasklutein currently has one shared workspace. Web and Agent tokens are issued s
 
 Individual user accounts, per-user data access, and MCP OAuth sign-in are not available.
 
-## Project
+## License
 
-[Changelog](CHANGELOG.md) · [MIT License](LICENSE)
+[MIT](LICENSE)
