@@ -3,10 +3,9 @@ import os
 from logging.config import fileConfig
 
 from alembic import context
+from app.models import Base
 from sqlalchemy import engine_from_config, pool
 from sqlalchemy.engine import make_url
-
-from app.models import Base
 
 config = context.config
 

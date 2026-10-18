@@ -31,6 +31,12 @@ app = FastAPI(
 
 origins = [origin.strip() for origin in os.getenv("WEB_ORIGINS", "http://localhost:5173").split(",") if origin.strip()]
 logger = logging.getLogger("tasklutein.api")
+logger.setLevel(logging.INFO)
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    handler.setLevel(logging.INFO)
+    logger.addHandler(handler)
+logger.propagate = False
 _SAFE_ERROR_CODE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _MAX_REST_REQUEST_BYTES = 64 * 1024
 app.add_middleware(
@@ -96,6 +102,11 @@ async def handle_unexpected_error(request: Request, _exc: Exception):
     return JSONResponse(
         {"detail": "internal_error", "code": "internal_error", "request_id": request_id},
         status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+        headers={
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+            "X-Request-ID": request_id,
+        },
     )
 
 

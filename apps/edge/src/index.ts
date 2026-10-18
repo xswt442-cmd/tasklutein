@@ -13,6 +13,7 @@ export type EdgeEnv = {
 
 const GATEWAY_HEADER = "X-Tasklutein-Gateway";
 const MAX_REST_REQUEST_BYTES = 64 * 1024;
+const MAX_MCP_REQUEST_BYTES = 1024 * 1024;
 const ALLOWED_HEADERS = new Set([
   "authorization", "content-type", "accept", "accept-language",
   "mcp-protocol-version", "mcp-session-id", "last-event-id", "origin", "x-request-id",
@@ -67,7 +68,10 @@ export async function proxyGateway(
     return gatewayError("unauthorized", 401, requestId);
   }
   const contentLength = Number(request.headers.get("Content-Length"));
-  if (Number.isFinite(contentLength) && contentLength > MAX_REST_REQUEST_BYTES) {
+  const maxRequestBytes = incoming.pathname === "/mcp" || incoming.pathname.startsWith("/mcp/")
+    ? MAX_MCP_REQUEST_BYTES
+    : MAX_REST_REQUEST_BYTES;
+  if (Number.isFinite(contentLength) && contentLength > maxRequestBytes) {
     return gatewayError("request_too_large", 413, requestId);
   }
   if (!env.ORIGIN_URL || !env.ORIGIN_GATEWAY_TOKEN || env.ORIGIN_GATEWAY_TOKEN.length < 32 ||

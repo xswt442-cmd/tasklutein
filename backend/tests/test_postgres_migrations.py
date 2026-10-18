@@ -1,7 +1,10 @@
 """Migration and API integration checks against a disposable PostgreSQL database."""
 import os
+import socketserver
+import threading
 from collections.abc import Iterator
 from pathlib import Path
+from time import perf_counter, sleep
 
 import psycopg
 import pytest
@@ -12,6 +15,7 @@ from app.main import app
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
+from sqlalchemy.exc import SQLAlchemyError
 
 WEB_TOKEN = "web-postgres-test-token-" + "a" * 40
 AGENT_TOKEN = "agent-postgres-test-token-" + "b" * 40
@@ -186,3 +190,53 @@ def test_existing_initial_schema_can_be_stamped_without_losing_api_data(postgres
         preserved_reports = client.get(f"/api/tasks/{task_id}/reports", headers=headers(WEB_TOKEN))
         assert preserved_reports.status_code == 200
         assert preserved_reports.json()["reports"] == [report]
+
+
+def test_postgres_ready_has_bounded_connection_and_query_timeouts(postgres_database: str):
+    command.upgrade(alembic_config(), "head")
+    factory = get_session_factory()
+    engine = factory.kw["bind"]
+
+    started = perf_counter()
+    with pytest.raises(SQLAlchemyError):
+        with engine.connect() as connection:
+            connection.execute(text("SELECT pg_sleep(6)"))
+    assert perf_counter() - started < 5
+
+    class StalledPostgresHandler(socketserver.BaseRequestHandler):
+        def handle(self):
+            # Accept the TCP connection but never answer PostgreSQL's startup probe.
+            sleep(5)
+
+    class StalledPostgresServer(socketserver.ThreadingTCPServer):
+        allow_reuse_address = True
+        daemon_threads = True
+
+    server = StalledPostgresServer(("127.0.0.1", 0), StalledPostgresHandler)
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    stalled_url = make_url(postgres_database).set(host="127.0.0.1", port=server.server_address[1])
+    monkeypatch_url = stalled_url.render_as_string(hide_password=False)
+    previous_url = os.environ.get("DATABASE_URL")
+    os.environ["DATABASE_URL"] = monkeypatch_url
+    get_session_factory.cache_clear()
+    started = perf_counter()
+    try:
+        with TestClient(app) as client:
+            response = client.get("/api/ready", headers=headers(WEB_TOKEN))
+        elapsed = perf_counter() - started
+        assert response.status_code == 503
+        assert response.json()["code"] == "database_unavailable"
+        assert elapsed < 5
+    finally:
+        stalled_factory = get_session_factory()
+        stalled_factory.kw["bind"].dispose()
+        get_session_factory.cache_clear()
+        if previous_url is None:
+            os.environ.pop("DATABASE_URL", None)
+        else:
+            os.environ["DATABASE_URL"] = previous_url
+        server.shutdown()
+        server.server_close()
+        server_thread.join(timeout=1)
+        get_session_factory()

@@ -1,3 +1,7 @@
+import io
+
+from app.database import get_db
+from app.main import app, logger
 from conftest import AGENT_TOKEN, WEB_TOKEN
 from fastapi.testclient import TestClient
 
@@ -28,6 +32,49 @@ def test_api_generates_request_ids_and_rejects_forged_origin_ids(client: TestCli
     assert response.headers["X-Request-ID"] != "caller-supplied"
 
 
+def test_request_completion_is_written_to_stderr(client: TestClient):
+    handler = logger.handlers[0]
+    original_stream = handler.stream
+    capture = io.StringIO()
+    handler.setStream(capture)
+    try:
+        response = client.get("/api/health")
+    finally:
+        handler.setStream(original_stream)
+    assert response.status_code == 200
+
+    output = capture.getvalue()
+    events = [line for line in output.splitlines() if '"event":"request_complete"' in line]
+    assert events
+    assert '"request_id":"' + response.headers["X-Request-ID"] + '"' in events[-1]
+    assert '"route":"/api/health"' in events[-1]
+    assert '"status":200' in events[-1]
+
+
+def test_unexpected_error_has_common_headers_and_safe_body(client: TestClient):
+    class BrokenSession:
+        def execute(self, _statement):
+            raise RuntimeError("private database failure")
+
+    def failing_db():
+        yield BrokenSession()
+
+    previous = app.dependency_overrides.get(get_db)
+    app.dependency_overrides[get_db] = failing_db
+    try:
+        with TestClient(app, raise_server_exceptions=False) as test_client:
+            response = test_client.get("/api/ready", headers=auth(WEB_TOKEN))
+        assert response.status_code == 500, response.text
+        assert response.headers["X-Request-ID"] == response.json()["request_id"]
+        assert response.headers["Cache-Control"] == "no-store"
+        assert response.headers["X-Content-Type-Options"] == "nosniff"
+        assert response.json()["code"] == "internal_error"
+        assert "private database failure" not in response.text
+    finally:
+        if previous is None:
+            app.dependency_overrides.pop(get_db, None)
+        else:
+            app.dependency_overrides[get_db] = previous
 def test_api_errors_include_safe_codes_and_request_ids(client: TestClient):
     missing = client.get(
         "/api/tasks/00000000-0000-4000-8000-000000000001",
