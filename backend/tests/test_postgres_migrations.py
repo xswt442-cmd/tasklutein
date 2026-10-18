@@ -123,7 +123,7 @@ def test_empty_postgres_upgrades_and_serves_real_api(postgres_database: str):
 
         read_back = client.get(f"/api/tasks/{task['id']}/reports", headers=headers(WEB_TOKEN))
         assert read_back.status_code == 200
-        assert read_back.json()["reports"]["total"] == 101
+        assert read_back.json()["total"] == 101
 
     command.check(alembic_config())
 
