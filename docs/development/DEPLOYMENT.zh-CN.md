@@ -73,6 +73,16 @@ unset TASKLUTEIN_LEGACY_OWNER_ISSUER TASKLUTEIN_LEGACY_OWNER_SUBJECT \
 
 核对任务与汇报数量及记录 ID 后，再允许第二个受邀用户写入。若不存在未归属任务，执行 `0003_task_workspace_required` 无需提供上述归属信息。系统会阻止迁移回退到不包含工作区隔离的 `0001_baseline`；应用回退也必须保留工作区范围校验。Production 迁移和部署仍需本轮单独授权。
 
+完成 `0003_task_workspace_required` 并核对备份与恢复方案后，将包含目标迁移的 API 镜像构建完成，再依次应用 `0004_task_history` 并更新 API/MCP 服务：
+
+```sh
+docker compose -f deploy/compose.yml --env-file deploy/.env build api mcp
+docker compose -f deploy/compose.yml --env-file deploy/.env run --rm --no-deps api alembic upgrade 0004_task_history
+docker compose -f deploy/compose.yml --env-file deploy/.env up -d api mcp
+```
+
+`0004_task_history` 为任务增加可空归档时间并创建活动表；既有任务仍是当前任务，迁移不会补造历史活动。迁移不会自动回退。首次归档后，回退版本必须继续过滤归档任务；不要通过 downgrade 或清除业务历史来恢复旧版本。
+
 ## 发布、备份与恢复
 
 - `dev` 对应开发和 Preview，`main` 对应发布源码。跨环境数据、Token、Worker 回源和 Tunnel 配置必须相互隔离。

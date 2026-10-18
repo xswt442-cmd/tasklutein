@@ -8,11 +8,13 @@ export type Task = {
   created_at: string;
   updated_at: string;
 };
+export type ArchivedTask = Task & { archived_at: string };
 export type Report = {
   id: string;
   task_id: string;
   content: string;
   source: "user" | "agent";
+  actor_name: string | null;
   created_at: string;
 };
 export type Page<T> = {
@@ -23,10 +25,26 @@ export type Page<T> = {
 };
 export type TaskPage = Omit<Page<Task>, "items"> & { tasks: Task[] };
 export type ReportPage = Omit<Page<Report>, "items"> & { reports: Report[] };
+export type ActivityEventType = "task.created" | "task.updated" | "task.status_changed" | "task.deleted" | "report.created";
+export type ActivitySource = "user" | "agent";
+export type Activity = {
+  id: string;
+  task_id: string;
+  task_title: string;
+  event_type: ActivityEventType;
+  actor_type: ActivitySource;
+  actor_name: string | null;
+  request_id: string;
+  summary: Record<string, unknown>;
+  occurred_at: string;
+};
+export type ArchivedTaskPage = Omit<Page<ArchivedTask>, "items"> & { tasks: ArchivedTask[] };
+export type ActivityPage = Omit<Page<Activity>, "items"> & { activities: Activity[] };
 export type Overview = {
   total: number;
   by_status: Record<TaskStatus, number>;
   generated_at: string;
+  recent_activities: Activity[];
 };
 export type User = { id: string; email: string; created_at: string };
 export type Workspace = { id: string; name: string; created_at: string };

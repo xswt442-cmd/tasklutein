@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
+    JSON,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -15,6 +16,7 @@ from sqlalchemy import (
     func,
     text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -79,6 +81,7 @@ class Task(Base):
         CheckConstraint("status IN ('todo', 'in_progress', 'done')", name="tasks_status_check"),
         Index("idx_tasks_updated", desc("updated_at")),
         Index("idx_tasks_workspace_updated", "workspace_id", desc("updated_at"), desc("id")),
+        Index("idx_tasks_workspace_archived", "workspace_id", desc("archived_at"), desc("id")),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
@@ -88,7 +91,9 @@ class Task(Base):
     status: Mapped[str] = mapped_column(String(24), nullable=False, default="todo", server_default=text("'todo'"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now, server_default=func.now())
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     reports: Mapped[list["Report"]] = relationship(back_populates="task", cascade="all, delete-orphan", passive_deletes=True)
+    activities: Mapped[list["Activity"]] = relationship(back_populates="task", cascade="all, delete-orphan", passive_deletes=True)
 
 
 class Report(Base):
@@ -114,3 +119,36 @@ class Report(Base):
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now, server_default=func.now())
     task: Mapped[Task] = relationship(back_populates="reports")
+
+
+class Activity(Base):
+    __tablename__ = "activities"
+    __table_args__ = (
+        CheckConstraint(
+            "event_type IN ('task.created', 'task.updated', 'task.status_changed', 'task.deleted', 'report.created')",
+            name="activities_event_type_check",
+        ),
+        CheckConstraint("actor_type IN ('user', 'agent')", name="activities_actor_type_check"),
+        Index("idx_activities_workspace_occurred", "workspace_id", desc("occurred_at"), desc("id")),
+        Index("idx_activities_task_occurred", "task_id", desc("occurred_at"), desc("id")),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
+    )
+    task_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    actor_type: Mapped[str] = mapped_column(String(12), nullable=False)
+    actor_user_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
+    )
+    agent_token_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("agent_tokens.id", ondelete="SET NULL")
+    )
+    request_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    summary: Mapped[dict[str, object]] = mapped_column(JSON().with_variant(JSONB, "postgresql"), nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now, server_default=func.now()
+    )
+    task: Mapped[Task] = relationship(back_populates="activities")

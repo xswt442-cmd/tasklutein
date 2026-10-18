@@ -29,6 +29,7 @@ export function TaskDetailPage() {
   const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
   const [editing, setEditing] = useState(false);
+  const [showDeleteOptions, setShowDeleteOptions] = useState(false);
   const [editTitle, setEditTitle] = useState("");
   const [editDescription, setEditDescription] = useState("");
   const [reportDraft, setReportDraft] = useState("");
@@ -65,6 +66,7 @@ export function TaskDetailPage() {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["tasks"] }),
         queryClient.invalidateQueries({ queryKey: ["overview"] }),
+        queryClient.invalidateQueries({ queryKey: ["activity"] }),
       ]);
       setEditing(false);
     },
@@ -80,18 +82,26 @@ export function TaskDetailPage() {
       const next = new URLSearchParams(searchParams);
       next.delete("reports_offset");
       setSearchParams(next, { replace: true });
-      await queryClient.invalidateQueries({ queryKey: ["reports", taskId] });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["reports", taskId] }),
+        queryClient.invalidateQueries({ queryKey: ["activity"] }),
+        queryClient.invalidateQueries({ queryKey: ["overview"] }),
+      ]);
     },
   });
 
   const deleteTask = useMutation({
-    mutationFn: () => api<void>("/tasks/" + taskId, { method: "DELETE" }),
-    onSuccess: async () => {
+    mutationFn: (history: "keep" | "delete") => api<void>(`/tasks/${taskId}?history=${history}`, { method: "DELETE" }),
+    onSuccess: async (_result, history) => {
+      navigate(history === "keep" ? `/history/tasks/${taskId}` : "/tasks");
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["tasks"] }),
         queryClient.invalidateQueries({ queryKey: ["overview"] }),
+        queryClient.invalidateQueries({ queryKey: ["activity"] }),
+        queryClient.invalidateQueries({ queryKey: ["history"] }),
+        queryClient.invalidateQueries({ queryKey: ["reports", taskId] }),
+        queryClient.invalidateQueries({ queryKey: ["task", taskId] }),
       ]);
-      navigate("/tasks");
     },
   });
 
@@ -114,9 +124,13 @@ export function TaskDetailPage() {
     addReport.mutate();
   }
 
-  async function removeTask() {
-    if (deleteTask.isPending || !window.confirm("删除此任务及其全部工作汇报？此操作立即清除数据，不保留历史。")) return;
-    deleteTask.mutate();
+  function removeTask(history: "keep" | "delete") {
+    if (deleteTask.isPending) return;
+    const message = history === "keep"
+      ? "删除当前任务并保留历史？任务字段、全部工作汇报和活动会保存到历史页面，只读查看。"
+      : "删除任务及历史记录？任务、全部工作汇报和活动会立即永久删除。此操作无法撤销。";
+    if (!window.confirm(message)) return;
+    deleteTask.mutate(history);
   }
 
   function changeReportPage(offset: number) {
@@ -152,11 +166,26 @@ export function TaskDetailPage() {
         </div>
         {!editing && <div className="flex w-full items-center justify-end gap-2 sm:w-auto">
           <button type="button" className="secondary-btn" onClick={() => beginEditing(task)}><Pencil size={15} />编辑</button>
-          <button type="button" className="danger-btn" onClick={() => void removeTask()} disabled={deleteTask.isPending}>
-            <Trash2 size={15} />删除
+          <button type="button" className="danger-btn" aria-expanded={showDeleteOptions} aria-controls="task-delete-options"
+            onClick={() => setShowDeleteOptions((shown) => !shown)} disabled={deleteTask.isPending}>
+            <Trash2 size={15} />{deleteTask.isPending ? "正在删除…" : "删除任务"}
           </button>
         </div>}
       </div>
+
+      {!editing && showDeleteOptions && <div id="task-delete-options" className="mt-5 rounded-xl border border-[#e6ece3] bg-[#f8faf5] p-4">
+        <h3 className="text-sm font-semibold">选择删除方式</h3>
+        <p className="mt-1 text-xs leading-5 text-[#66746a]">归档后任务从当前列表移除，任务字段、报告和活动会保留在历史页面。</p>
+        <div className="mt-3 grid gap-2 sm:grid-cols-2">
+          <button type="button" className="primary-btn justify-center" disabled={deleteTask.isPending} onClick={() => removeTask("keep")}>
+            删除任务（保留历史，推荐）
+          </button>
+          <button type="button" className="danger-btn justify-center" disabled={deleteTask.isPending} onClick={() => removeTask("delete")}>
+            删除任务及历史记录
+          </button>
+        </div>
+        {deleteTask.isError && <div className="mt-3"><ApiFeedback error={deleteTask.error} /></div>}
+      </div>}
 
       {editing
         ? <form onSubmit={saveDetails} className="mt-6 space-y-4">
@@ -188,7 +217,7 @@ export function TaskDetailPage() {
             </select>
           </label>
         </div>}
-      {(updateTask.isError || deleteTask.isError) && !editing && <div className="mt-4"><ApiFeedback error={updateTask.error ?? deleteTask.error} /></div>}
+      {updateTask.isError && !editing && <div className="mt-4"><ApiFeedback error={updateTask.error} /></div>}
     </section>
 
     <section className="card">
@@ -217,7 +246,7 @@ export function TaskDetailPage() {
       {reportData && reportData.reports.length > 0 && <div className="divide-y divide-[#edf1ea]">
         {reportData.reports.map((report) => <article key={report.id} className="py-4 first:pt-1 last:pb-1">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <span className="text-xs font-semibold uppercase tracking-wide text-[#2f7253]">{report.source === "agent" ? "Agent" : "人工"}</span>
+            <span className="text-xs font-semibold uppercase tracking-wide text-[#2f7253]">{report.actor_name || (report.source === "agent" ? "Agent" : "人工")}</span>
             <time className="text-xs text-[#718076]">{formatDate(report.created_at)}</time>
           </div>
           <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-[#46574c]">{report.content}</p>

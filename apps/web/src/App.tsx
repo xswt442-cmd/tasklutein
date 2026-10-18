@@ -1,11 +1,12 @@
 import { QueryClient, QueryClientProvider, useIsFetching, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CheckCircle2, Circle, LayoutDashboard, ListTodo, LogOut, RefreshCw, Settings } from "lucide-react";
+import { Archive, CheckCircle2, Circle, LayoutDashboard, ListTodo, LogOut, RefreshCw, Settings } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { BrowserRouter, NavLink, Outlet, Route, Routes } from "react-router";
 import { api } from "./api";
 import type { Overview, Session } from "./api";
 import { ApiFeedback } from "./components/ApiFeedback";
+import { HistoryPage } from "./pages/HistoryPage";
 import { OverviewPage } from "./pages/OverviewPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { TaskDetailPage } from "./pages/TaskDetailPage";
@@ -66,6 +67,8 @@ function WorkspaceRoutes({ session, signOut }: { session: Session; signOut: () =
     <Route index element={<OverviewPage />} />
     <Route path="tasks" element={<TasksPage />} />
     <Route path="tasks/:taskId" element={<TaskDetailPage />} />
+    <Route path="history" element={<HistoryPage />} />
+    <Route path="history/tasks/:taskId" element={<HistoryPage />} />
     <Route path="settings" element={<SettingsPage session={session} />} />
     <Route path="*" element={<section className="card text-center"><p className="eyebrow">404</p><h2 className="mt-2 text-xl font-semibold">页面不存在</h2><NavLink to="/" className="primary-btn mt-5 inline-flex">返回工作台</NavLink></section>} />
   </Route></Routes>;
@@ -86,11 +89,11 @@ function WorkspaceLayout({ session, signOut }: { session: Session; signOut: () =
         <button type="button" className="secondary-btn" aria-label="刷新数据" onClick={() => void client.invalidateQueries()} disabled={fetching}><RefreshCw size={15} /><span className="hidden sm:inline">刷新</span></button>
         <button type="button" className="secondary-btn" onClick={signOut}><LogOut size={15} /><span>退出</span></button>
       </div>
-      <nav aria-label="主导航" className="flex w-full gap-2 overflow-x-auto pb-0.5 lg:hidden"><NavItem to="/" end><LayoutDashboard size={15} />Overview</NavItem><NavItem to="/tasks"><ListTodo size={15} />任务</NavItem><NavItem to="/settings"><Settings size={15} />设置</NavItem></nav>
+      <nav aria-label="主导航" className="flex w-full gap-2 overflow-x-auto pb-0.5 lg:hidden"><NavItem to="/" end><LayoutDashboard size={15} />Overview</NavItem><NavItem to="/tasks"><ListTodo size={15} />任务</NavItem><NavItem to="/history"><Archive size={15} />历史</NavItem><NavItem to="/settings"><Settings size={15} />设置</NavItem></nav>
     </div></header>
     <div className="mx-auto grid max-w-[1440px] gap-5 px-4 py-5 sm:px-6 lg:grid-cols-[220px_minmax(0,1fr)] lg:px-8 lg:py-8">
       <aside className="hidden lg:block"><div className="sticky top-28 rounded-2xl border border-[#e2e8dd] bg-white p-3"><p className="px-3 pb-2 pt-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-[#768279]">工作区</p>
-        <nav aria-label="侧边导航" className="space-y-1"><NavItem to="/" end><LayoutDashboard size={17} />Overview</NavItem><NavItem to="/tasks"><ListTodo size={17} />任务</NavItem><NavItem to="/settings"><Settings size={17} />设置</NavItem></nav>
+        <nav aria-label="侧边导航" className="space-y-1"><NavItem to="/" end><LayoutDashboard size={17} />Overview</NavItem><NavItem to="/tasks"><ListTodo size={17} />任务</NavItem><NavItem to="/history"><Archive size={17} />历史</NavItem><NavItem to="/settings"><Settings size={17} />设置</NavItem></nav>
         <div className="mt-5 border-t border-[#edf1ea] px-3 pt-4 text-xs leading-5 text-[#718076]"><span className="block font-medium text-[#53675a]">私人工作区</span>{session.workspace.name}</div>
       </div></aside>
       <main className="min-w-0"><Outlet /><footer className="py-8 text-center text-xs text-[#718076]">Tasklutein · People and agents working together</footer></main>

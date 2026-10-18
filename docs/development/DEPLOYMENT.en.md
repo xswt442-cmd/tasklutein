@@ -73,6 +73,16 @@ unset TASKLUTEIN_LEGACY_OWNER_ISSUER TASKLUTEIN_LEGACY_OWNER_SUBJECT \
 
 Verify the task and report counts and IDs before routing the second invited user to the application. A database with no unassigned tasks can apply `0003_task_workspace_required` without the legacy-owner values. Downgrading to `0001_baseline` is blocked because that schema has no workspace isolation; application rollback must retain workspace-scoped authorization. Production migration and deployment require separate authorization.
 
+After applying `0003_task_workspace_required` and verifying the backup and recovery path, build the API image that contains the target migration, then apply `0004_task_history` and update the API/MCP services:
+
+```sh
+docker compose -f deploy/compose.yml --env-file deploy/.env build api mcp
+docker compose -f deploy/compose.yml --env-file deploy/.env run --rm --no-deps api alembic upgrade 0004_task_history
+docker compose -f deploy/compose.yml --env-file deploy/.env up -d api mcp
+```
+
+`0004_task_history` adds a nullable task archive timestamp and creates the activity table. Existing tasks remain current, and the migration does not fabricate historical activity. The migration does not downgrade automatically. After the first archive, a rollback version must continue to filter archived tasks; do not use a downgrade or clear business history to restore an older version.
+
 ## Release, Backup and Recovery
 
 - `dev` is for development/Preview and `main` for released source. Keep data, tokens, Worker origins, and Tunnel settings isolated by environment.

@@ -13,18 +13,18 @@
 ## Features
 
 - **Personal workspaces:** sign in through Cloudflare Access; each verified user has a separate workspace.
-- **Task management:** create, edit, and delete tasks; filter, search, sort, and paginate them.
-- **Overview:** see task totals, status counts, and recent updates in your workspace.
+- **Task management:** create and edit tasks, then archive them or permanently delete their history; filter, search, sort, and paginate current tasks.
+- **Overview and history:** see current task totals and recent activity; browse read-only archived task snapshots and reports, and remove individual or grouped activity history.
 - **Progress reports:** add multiple reports to a task and distinguish user from Agent activity.
 - **MCP agents:** use a personal Agent key to read and update tasks and submit reports in its owner's workspace.
 
 ## Get started
 
 1. Open [Tasklutein](https://tasklutein.xswt.fyi) and sign in through Cloudflare Access.
-2. Create tasks, update their statuses, and record progress.
-3. To connect an Agent, open Settings, create a personal Agent key, and save the secret immediately. Its plaintext cannot be viewed again; you can revoke it or set an expiration time.
+2. Create tasks, update their statuses, and record progress. When removing a task, archive it to keep its history or permanently delete the full history.
+3. To connect an Agent, open Settings, create a personal Agent key, and save the secret immediately. Its plaintext cannot be viewed again; you can edit its name or expiry and revoke it. Lists show only `tlu_` plus the next three key characters, and retain revoked keys with their status.
 
-Tasklutein creates a workspace after Cloudflare Access verifies the user. Workspaces are isolated by Access issuer and user subject; tasks, reports, overview data, and Agent keys are scoped to their workspace.
+Tasklutein creates a workspace after Cloudflare Access verifies the user. Workspaces are isolated by Access issuer and user subject; current tasks, archived history, activity records, overview data, and Agent keys are scoped to their workspace.
 
 ## Connect an MCP agent
 

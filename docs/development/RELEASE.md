@@ -52,7 +52,7 @@
 
 1. 使用项目维护账户在目标服务器上审查 Docker Compose、数据库卷、实际镜像版本及 Preview/Production 隔离。
 2. 数据库 Schema 变更前，先执行经批准的备份与恢复验证；备份脚本是 `scripts/production-backup.sh`，隔离恢复验证为 `scripts/production-restore-check.sh`。脚本应在具备 Docker 授权的目标服务器上执行，不通过本地开发机模拟生产备份。
-3. 按 [部署手册](DEPLOYMENT.zh-CN.md) 的 Alembic 规则检查已有数据库并单独执行迁移；不得重新初始化已有数据卷。M1.5 升级先执行 `0002_identity_workspace`，让维护者指定的旧数据归属用户通过 Access 建立工作区，再以该用户的 issuer、subject、email 和确认值执行 `0003_task_workspace_required`。迁移保留原任务及汇报 ID、内容和来源；不得猜测旧任务的归属。
+3. 按 [部署手册](DEPLOYMENT.zh-CN.md) 的 Alembic 规则检查已有数据库并单独执行迁移；不得重新初始化已有数据卷。M1.5 升级先执行 `0002_identity_workspace`，让维护者指定的旧数据归属用户通过 Access 建立工作区，再以该用户的 issuer、subject、email 和确认值执行 `0003_task_workspace_required`。M2 随后应用 `0004_task_history`；既有任务保持当前状态，迁移不补造活动。迁移保留原任务及汇报 ID、内容和来源；不得猜测旧任务的归属。
 4. 更新相互兼容的 FastAPI/MCP 容器，检查健康状态、任务/汇报持久化、MCP 工具和认证边界。
 5. 出现鉴权、数据、兼容性或服务异常时，停止下一步变更，按审查过的版本和 Schema 策略恢复。
 

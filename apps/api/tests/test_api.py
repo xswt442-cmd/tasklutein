@@ -1,5 +1,5 @@
 import io
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from app.main import app, logger
@@ -251,6 +251,77 @@ def test_task_lifecycle_agent_keys_and_report_provenance(client: TestClient):
     assert client.get("/api/tasks/" + task_id + "/reports", headers=user_headers()).status_code == 404
 
 
+def test_agent_key_metadata_exposes_only_the_short_display_prefix(client: TestClient):
+    created = client.post("/api/agent-tokens", headers=user_headers(), json={"name": "Short display"})
+    assert created.status_code == 201
+    payload = created.json()
+    expected_prefix = payload["secret"][:7]
+
+    assert payload["token"]["prefix"] == expected_prefix
+    assert "secret" not in payload["token"]
+    assert "token_hash" not in payload["token"]
+    listed = client.get("/api/agent-tokens", headers=user_headers()).json()["tokens"]
+    assert listed == [payload["token"]]
+    assert listed[0]["prefix"] == expected_prefix
+    assert payload["secret"][7:] not in str(listed)
+
+
+def test_agent_key_can_update_name_and_expiration(client: TestClient):
+    created = client.post("/api/agent-tokens", headers=user_headers(), json={"name": "Before edit"})
+    token_id = created.json()["token"]["id"]
+    expiry = (datetime.now(UTC) + timedelta(days=2)).isoformat()
+
+    updated = client.patch(
+        f"/api/agent-tokens/{token_id}",
+        headers=user_headers(),
+        json={"name": "After edit", "expires_at": expiry},
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["token"]["name"] == "After edit"
+    returned_expiry = datetime.fromisoformat(updated.json()["token"]["expires_at"].replace("Z", "+00:00"))
+    if returned_expiry.tzinfo is None:
+        returned_expiry = returned_expiry.replace(tzinfo=UTC)
+    assert returned_expiry == datetime.fromisoformat(expiry)
+    assert updated.json()["token"]["prefix"] == created.json()["secret"][:7]
+    assert "secret" not in updated.json()["token"]
+
+    cleared_expiry = client.patch(
+        f"/api/agent-tokens/{token_id}", headers=user_headers(), json={"expires_at": None}
+    )
+    assert cleared_expiry.status_code == 200, cleared_expiry.text
+    assert cleared_expiry.json()["token"]["name"] == "After edit"
+    assert cleared_expiry.json()["token"]["expires_at"] is None
+
+
+def test_revoked_agent_key_stays_visible_but_cannot_be_updated(client: TestClient):
+    created = client.post("/api/agent-tokens", headers=user_headers(), json={"name": "Keep revoked row"})
+    token_id = created.json()["token"]["id"]
+    other_headers = user_headers(subject="other-key-owner", email="other-key-owner@example.test")
+    assert client.post("/api/session/bootstrap", headers=other_headers).status_code == 200
+
+    assert client.patch(
+        f"/api/agent-tokens/{token_id}", headers=other_headers, json={"name": "Cross-workspace"}
+    ).status_code == 404
+    assert client.patch(
+        f"/api/agent-tokens/{token_id}",
+        headers=agent_headers(created.json()["secret"]),
+        json={"name": "Agent cannot edit"},
+    ).status_code == 403
+
+    revoked = client.delete(f"/api/agent-tokens/{token_id}", headers=user_headers())
+    assert revoked.status_code == 204
+    listed = client.get("/api/agent-tokens", headers=user_headers()).json()["tokens"]
+    assert len(listed) == 1
+    assert listed[0]["id"] == token_id
+    assert listed[0]["name"] == "Keep revoked row"
+    assert listed[0]["revoked_at"] is not None
+    assert listed[0]["prefix"] == created.json()["secret"][:7]
+    assert client.patch(
+        f"/api/agent-tokens/{token_id}", headers=user_headers(), json={"name": "After revoke"}
+    ).status_code == 409
+    assert client.delete(f"/api/agent-tokens/{token_id}", headers=user_headers()).status_code == 204
+
+
 def test_disabled_user_rejects_user_and_agent_credentials(client: TestClient):
     secret = issue_agent_key(client, "Disabled owner Agent")
     factory = app.state.test_session_factory
@@ -278,3 +349,230 @@ def test_validation(client: TestClient):
         json={"content": "report", "source": "agent"},
     ).status_code == 422
     assert client.get("/api/tasks", headers=user_headers(), params={"status": "unknown"}).status_code == 422
+
+
+def test_task_and_report_changes_create_scoped_activity_events(client: TestClient):
+    created = client.post(
+        "/api/tasks",
+        headers=user_headers(),
+        json={"title": "Activity test task", "description": "Do not copy this description into history."},
+    )
+    assert created.status_code == 201
+    task = created.json()["task"]
+    task_id = task["id"]
+
+    created_events = client.get("/api/activity", headers=user_headers(), params={"task_id": task_id})
+    assert created_events.status_code == 200
+    assert created_events.json()["total"] == 1
+    created_event = created_events.json()["activities"][0]
+    assert created_event["event_type"] == "task.created"
+    assert created_event["actor_type"] == "user"
+    assert created_event["actor_name"] == "local-test@example.test"
+    assert created_event["request_id"] == created.headers["X-Request-ID"]
+    assert "Do not copy this description" not in str(created_event["summary"])
+
+    unchanged = client.patch(
+        f"/api/tasks/{task_id}",
+        headers=user_headers(),
+        json={"title": task["title"], "status": task["status"]},
+    )
+    assert unchanged.status_code == 200
+    assert unchanged.json()["task"]["updated_at"] == task["updated_at"]
+    assert client.get("/api/activity", headers=user_headers(), params={"task_id": task_id}).json()["total"] == 1
+
+    changed = client.patch(
+        f"/api/tasks/{task_id}",
+        headers=user_headers(),
+        json={"title": "Updated activity task", "status": "in_progress"},
+    )
+    assert changed.status_code == 200
+    changed_event = client.get("/api/activity", headers=user_headers(), params={"task_id": task_id}).json()[
+        "activities"
+    ][0]
+    assert changed_event["event_type"] == "task.status_changed"
+    assert changed_event["request_id"] == changed.headers["X-Request-ID"]
+    assert changed_event["summary"] == {
+        "changed_fields": ["title", "status"],
+        "status_before": "todo",
+        "status_after": "in_progress",
+    }
+
+    report_content = "A report body must not be duplicated into activity history."
+    report = client.post(
+        f"/api/tasks/{task_id}/reports",
+        headers=user_headers(),
+        json={"content": report_content},
+    )
+    assert report.status_code == 201
+    assert report.json()["report"]["actor_name"] == "local-test@example.test"
+    listed_reports = client.get(f"/api/tasks/{task_id}/reports", headers=user_headers()).json()
+    assert listed_reports["reports"][0]["actor_name"] == "local-test@example.test"
+    current = client.get(f"/api/tasks/{task_id}", headers=user_headers()).json()["task"]
+    assert current["updated_at"] == changed.json()["task"]["updated_at"]
+
+    activity_page = client.get("/api/activity", headers=user_headers(), params={"task_id": task_id}).json()
+    assert activity_page["total"] == 3
+    report_event = activity_page["activities"][0]
+    assert report_event["event_type"] == "report.created"
+    assert report_event["actor_type"] == "user"
+    assert report_event["actor_name"] == "local-test@example.test"
+    assert report_event["request_id"] == report.headers["X-Request-ID"]
+    assert report_event["summary"] == {"report_id": report.json()["report"]["id"]}
+    assert report_content not in str(activity_page["activities"])
+
+
+def test_agent_activity_identifies_the_verified_key(client: TestClient):
+    secret = issue_agent_key(client, "History MCP Agent")
+    created = client.post(
+        "/api/tasks",
+        headers=agent_headers(secret),
+        json={"title": "Agent activity", "description": "Agent task description."},
+    )
+    assert created.status_code == 201
+    task = created.json()["task"]
+    activity = client.get(
+        "/api/activity",
+        headers=user_headers(),
+        params={"source": "agent", "task_id": task["id"]},
+    )
+    assert activity.status_code == 200
+    assert activity.json()["total"] == 1
+    event = activity.json()["activities"][0]
+    assert event["event_type"] == "task.created"
+    assert event["actor_type"] == "agent"
+    assert event["actor_name"] == "History MCP Agent"
+    assert event["agent_token_id"] is not None
+    assert event["actor_user_id"] is not None
+    assert event["request_id"] == created.headers["X-Request-ID"]
+    assert "Agent task description" not in str(event["summary"])
+    assert client.get(
+        "/api/activity",
+        headers=user_headers(),
+        params={"source": "user", "task_id": task["id"]},
+    ).json()["total"] == 0
+
+    report = client.post(
+        f"/api/tasks/{task['id']}/reports",
+        headers=agent_headers(secret),
+        json={"content": "Report by a verified Agent key."},
+    )
+    assert report.status_code == 201
+    assert report.json()["report"]["actor_name"] == "History MCP Agent"
+    listed_report = client.get(f"/api/tasks/{task['id']}/reports", headers=user_headers()).json()["reports"][0]
+    assert listed_report["actor_name"] == "History MCP Agent"
+
+
+def test_archiving_keeps_a_read_only_task_and_complete_report_snapshot(client: TestClient):
+    created = client.post(
+        "/api/tasks",
+        headers=user_headers(),
+        json={"title": "Archive snapshot", "description": "Complete task description."},
+    )
+    assert created.status_code == 201
+    original = created.json()["task"]
+    task_id = original["id"]
+    report_content = "Complete report content for the archived task."
+    report = client.post(
+        f"/api/tasks/{task_id}/reports",
+        headers=user_headers(),
+        json={"content": report_content},
+    )
+    assert report.status_code == 201
+
+    archived = client.delete(f"/api/tasks/{task_id}?history=keep", headers=user_headers())
+    assert archived.status_code == 204
+    assert client.get("/api/tasks", headers=user_headers()).json()["total"] == 0
+    assert client.get("/api/overview", headers=user_headers()).json()["total"] == 0
+    assert client.get(f"/api/tasks/{task_id}", headers=user_headers()).status_code == 404
+    assert client.get(f"/api/tasks/{task_id}/reports", headers=user_headers()).status_code == 404
+    assert client.patch(
+        f"/api/tasks/{task_id}", headers=user_headers(), json={"status": "done"}
+    ).status_code == 404
+    assert client.post(
+        f"/api/tasks/{task_id}/reports", headers=user_headers(), json={"content": "too late"}
+    ).status_code == 404
+
+    history = client.get(f"/api/history/tasks/{task_id}", headers=user_headers())
+    assert history.status_code == 200
+    archived_task = history.json()["task"]
+    datetime.fromisoformat(archived_task["archived_at"].replace("Z", "+00:00"))
+    assert {key: archived_task[key] for key in original} == original
+
+    reports = client.get(f"/api/history/tasks/{task_id}/reports", headers=user_headers())
+    assert reports.status_code == 200
+    assert reports.json()["total"] == 1
+    assert reports.json()["reports"] == [report.json()["report"]]
+
+    activities = client.get("/api/activity", headers=user_headers(), params={"task_id": task_id})
+    assert activities.status_code == 200
+    assert activities.json()["total"] == 3
+    assert {item["event_type"] for item in activities.json()["activities"]} == {
+        "task.created", "report.created", "task.deleted"
+    }
+    serialized_activities = str(activities.json()["activities"])
+    assert "Complete task description" not in serialized_activities
+    assert report_content not in serialized_activities
+    overview_activities = client.get("/api/overview", headers=user_headers()).json()["recent_activities"]
+    assert {item["event_type"] for item in overview_activities} == {
+        "task.created", "report.created", "task.deleted"
+    }
+
+    cleared = client.delete(f"/api/history/tasks/{task_id}", headers=user_headers())
+    assert cleared.status_code == 204
+    assert client.get(f"/api/history/tasks/{task_id}", headers=user_headers()).status_code == 404
+    assert client.get(f"/api/history/tasks/{task_id}/reports", headers=user_headers()).status_code == 404
+    assert client.get("/api/activity", headers=user_headers(), params={"task_id": task_id}).json()["total"] == 0
+
+
+def test_clearing_current_history_and_physical_delete_have_distinct_effects(client: TestClient):
+    created = client.post("/api/tasks", headers=user_headers(), json={"title": "Keep current task"})
+    assert created.status_code == 201
+    task = created.json()["task"]
+    task_id = task["id"]
+    report = client.post(
+        f"/api/tasks/{task_id}/reports", headers=user_headers(), json={"content": "Remove this report"}
+    )
+    assert report.status_code == 201
+
+    cleared = client.delete(f"/api/history/tasks/{task_id}", headers=user_headers())
+    assert cleared.status_code == 204
+    current = client.get(f"/api/tasks/{task_id}", headers=user_headers())
+    assert current.status_code == 200
+    assert current.json()["task"] == task
+    assert client.get(f"/api/tasks/{task_id}/reports", headers=user_headers()).json()["total"] == 0
+    assert client.get("/api/activity", headers=user_headers(), params={"task_id": task_id}).json()["total"] == 0
+
+    deleted = client.delete(f"/api/tasks/{task_id}?history=delete", headers=user_headers())
+    assert deleted.status_code == 204
+    assert client.get(f"/api/tasks/{task_id}", headers=user_headers()).status_code == 404
+    assert client.get(f"/api/history/tasks/{task_id}", headers=user_headers()).status_code == 404
+
+
+def test_activity_and_history_cleanup_are_workspace_scoped_and_user_only(client: TestClient):
+    other_headers = user_headers(subject="activity-other-user", email="activity-other@example.test")
+    assert client.post("/api/session/bootstrap", headers=other_headers).status_code == 200
+    own_task = client.post("/api/tasks", headers=user_headers(), json={"title": "Own activity task"}).json()["task"]
+    other_task = client.post("/api/tasks", headers=other_headers, json={"title": "Foreign activity task"}).json()["task"]
+    own_events = client.get("/api/activity", headers=user_headers()).json()
+    other_events = client.get("/api/activity", headers=other_headers).json()
+    own_event = next(item for item in own_events["activities"] if item["task_id"] == own_task["id"])
+    other_event = next(item for item in other_events["activities"] if item["task_id"] == other_task["id"])
+
+    assert client.get(
+        "/api/activity", headers=user_headers(), params={"task_id": other_task["id"]}
+    ).json()["total"] == 0
+    assert client.get(f"/api/history/tasks/{other_task['id']}", headers=user_headers()).status_code == 404
+    assert client.delete(f"/api/activity/{other_event['id']}", headers=user_headers()).status_code == 404
+
+    agent_secret = issue_agent_key(client, "History read-only Agent")
+    agent = agent_headers(agent_secret)
+    assert client.delete(f"/api/activity/{own_event['id']}", headers=agent).status_code == 403
+    assert client.delete(f"/api/history/tasks/{own_task['id']}", headers=agent).status_code == 403
+    assert client.delete(f"/api/tasks/{own_task['id']}?history=keep", headers=agent).status_code == 403
+
+    assert client.delete(f"/api/activity/{own_event['id']}", headers=user_headers()).status_code == 204
+    remaining = client.get(
+        "/api/activity", headers=user_headers(), params={"task_id": own_task["id"], "source": "user"}
+    )
+    assert remaining.status_code == 200
+    assert remaining.json()["total"] == 0

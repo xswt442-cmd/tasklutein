@@ -4,6 +4,7 @@ import socketserver
 import threading
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from time import perf_counter, sleep
 from uuid import uuid4
@@ -45,7 +46,7 @@ if (
 
 def _drop_test_schema(engine) -> None:
     with engine.begin() as connection:
-        for table in ("reports", "agent_tokens", "tasks", "workspaces", "users", "alembic_version"):
+        for table in ("activities", "reports", "agent_tokens", "tasks", "workspaces", "users", "alembic_version"):
             connection.execute(text(f"DROP TABLE IF EXISTS {table} CASCADE"))
 
 
@@ -206,6 +207,9 @@ def test_existing_initial_sql_rows_survive_controlled_workspace_backfill(postgre
             {"id": str(report_id)},
         ).one()
         counts = connection.execute(text("SELECT (SELECT count(*) FROM tasks), (SELECT count(*) FROM reports)")).one()
+        legacy_activities = connection.scalar(
+            text("SELECT count(*) FROM activities WHERE task_id = :task_id"), {"task_id": str(task_id)}
+        )
         workspace_not_null = connection.execute(
             text("SELECT is_nullable FROM information_schema.columns WHERE table_schema = current_schema() "
                  "AND table_name = 'tasks' AND column_name = 'workspace_id'")
@@ -220,6 +224,7 @@ def test_existing_initial_sql_rows_survive_controlled_workspace_backfill(postgre
     assert report.actor_user_id is None
     assert report.agent_token_id is None
     assert counts == (1, 1)
+    assert legacy_activities == 0
     assert workspace_not_null == "NO"
 
     with TestClient(app) as client:
@@ -229,6 +234,10 @@ def test_existing_initial_sql_rows_survive_controlled_workspace_backfill(postgre
         legacy_reports = client.get(f"/api/tasks/{task_id}/reports", headers=owner_headers)
         assert legacy_reports.status_code == 200
         assert [item["id"] for item in legacy_reports.json()["reports"]] == [str(report_id)]
+        assert legacy_reports.json()["reports"][0]["actor_name"] is None
+        legacy_history = client.get("/api/activity", headers=owner_headers, params={"task_id": str(task_id)})
+        assert legacy_history.status_code == 200
+        assert legacy_history.json()["total"] == 0
 
 
 def test_concurrent_first_login_creates_one_user_and_workspace(postgres_database: str):
@@ -262,13 +271,13 @@ def test_concurrent_first_login_creates_one_user_and_workspace(postgres_database
     assert workspaces == 1
 
 
-def test_migration_refuses_downgrade_to_shared_workspace_schema(postgres_database: str):
+def test_migration_refuses_downgrade_from_task_history_schema(postgres_database: str):
     command.upgrade(alembic_config(), "head")
-    with pytest.raises(RuntimeError, match="cannot be downgraded to shared-workspace access"):
+    with pytest.raises(RuntimeError, match="Task history cannot be removed"):
         command.downgrade(alembic_config(), "0001_baseline")
     with create_engine(postgres_database).connect() as connection:
         revision = connection.scalar(text("SELECT version_num FROM alembic_version"))
-    assert revision == "0003_task_workspace_required"
+    assert revision == "0004_task_history"
 
 
 def test_postgres_ready_has_bounded_connection_and_query_timeouts(postgres_database: str):
@@ -323,3 +332,556 @@ def test_postgres_ready_has_bounded_connection_and_query_timeouts(postgres_datab
         server.server_close()
         server_thread.join(timeout=1)
         get_session_factory()
+
+
+def test_postgres_agent_key_metadata_updates_and_revocation_retain_record(postgres_database: str):
+    command.upgrade(alembic_config(), "head")
+    with TestClient(app) as client:
+        owner_headers, _owner = _new_identity(client, "agent-key-owner")
+        other_headers, _other = _new_identity(client, "agent-key-other")
+        secret, token_id = issue_agent_key(client, owner_headers, "Before edit")
+        listed = client.get("/api/agent-tokens", headers=owner_headers)
+        assert listed.status_code == 200, listed.text
+        metadata = next(token for token in listed.json()["tokens"] if token["id"] == token_id)
+        assert metadata["prefix"] == secret[:7]
+        assert "secret" not in metadata and "token_hash" not in metadata
+
+        expires_at = (datetime.now(UTC) + timedelta(days=3)).isoformat()
+        updated = client.patch(
+            f"/api/agent-tokens/{token_id}",
+            headers=owner_headers,
+            json={"name": "After edit", "expires_at": expires_at},
+        )
+        assert updated.status_code == 200, updated.text
+        updated_metadata = updated.json()["token"]
+        assert updated_metadata["name"] == "After edit"
+        assert updated_metadata["prefix"] == secret[:7]
+        assert "secret" not in updated_metadata and "token_hash" not in updated_metadata
+
+        assert client.patch(
+            f"/api/agent-tokens/{token_id}",
+            headers=other_headers,
+            json={"name": "Cross-workspace edit"},
+        ).status_code == 404
+        assert client.patch(
+            f"/api/agent-tokens/{token_id}",
+            headers=agent_headers(secret),
+            json={"name": "Agent edit"},
+        ).status_code == 403
+
+        revoked = client.delete(f"/api/agent-tokens/{token_id}", headers=owner_headers)
+        assert revoked.status_code == 204
+        assert client.delete(f"/api/agent-tokens/{token_id}", headers=owner_headers).status_code == 204
+        final_tokens = client.get("/api/agent-tokens", headers=owner_headers).json()["tokens"]
+        assert len(final_tokens) == 1
+        assert final_tokens[0]["id"] == token_id
+        assert final_tokens[0]["name"] == "After edit"
+        assert final_tokens[0]["revoked_at"] is not None
+        assert final_tokens[0]["prefix"] == secret[:7]
+        assert client.patch(
+            f"/api/agent-tokens/{token_id}",
+            headers=owner_headers,
+            json={"name": "After revoke"},
+        ).status_code == 409
+        assert client.get("/api/agent/whoami", headers=agent_headers(secret)).status_code == 401
+
+
+def _new_identity(client: TestClient, label: str) -> tuple[dict[str, str], dict]:
+    identity = uuid4().hex
+    subject = f"{label}-{identity}"
+    email = f"{label}-{identity}@example.test"
+    return user_headers(subject, email), bootstrap(client, subject, email)
+
+
+def _create_task(client: TestClient, headers: dict[str, str]) -> dict:
+    response = client.post(
+        "/api/tasks",
+        headers=headers,
+        json={"title": f"Task {uuid4().hex}", "description": f"Description {uuid4().hex}"},
+    )
+    assert response.status_code == 201, response.text
+    return response.json()["task"]
+
+
+def _create_report(client: TestClient, headers: dict[str, str], task_id: str) -> dict:
+    content = f"Report {uuid4().hex}"
+    response = client.post(f"/api/tasks/{task_id}/reports", headers=headers, json={"content": content})
+    assert response.status_code == 201, response.text
+    return response.json()["report"]
+
+
+def _activity_page(client: TestClient, headers: dict[str, str], task_id: str) -> dict:
+    response = client.get("/api/activity", headers=headers, params={"task_id": task_id, "limit": 100})
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def _task_counts(database_url: str, task_id: str) -> tuple[int, int, int]:
+    with create_engine(database_url).connect() as connection:
+        return connection.execute(
+            text(
+                "SELECT (SELECT count(*) FROM tasks WHERE id = :task_id), "
+                "(SELECT count(*) FROM reports WHERE task_id = :task_id), "
+                "(SELECT count(*) FROM activities WHERE task_id = :task_id)"
+            ),
+            {"task_id": task_id},
+        ).one()
+
+
+def test_postgres_task_report_and_archive_events_have_exact_semantics(postgres_database: str):
+    command.upgrade(alembic_config(), "head")
+    with TestClient(app) as client:
+        headers, _identity = _new_identity(client, "event-contract")
+        created = client.post(
+            "/api/tasks",
+            headers=headers,
+            json={"title": f"Created {uuid4().hex}", "description": f"Private description {uuid4().hex}"},
+        )
+        assert created.status_code == 201, created.text
+        task = created.json()["task"]
+        task_id = task["id"]
+        events = _activity_page(client, headers, task_id)
+        assert events["total"] == 1
+        created_event = events["activities"][0]
+        assert created_event["event_type"] == "task.created"
+        assert created_event["actor_type"] == "user"
+        assert created_event["request_id"] == created.headers["X-Request-ID"]
+        assert task["description"] not in str(created_event["summary"])
+
+        no_op = client.patch(
+            f"/api/tasks/{task_id}",
+            headers=headers,
+            json={"title": task["title"], "description": task["description"], "status": task["status"]},
+        )
+        assert no_op.status_code == 200, no_op.text
+        assert no_op.json()["task"]["updated_at"] == task["updated_at"]
+        assert _activity_page(client, headers, task_id)["total"] == 1
+
+        updated = client.patch(f"/api/tasks/{task_id}", headers=headers, json={"title": f"Updated {uuid4().hex}"})
+        assert updated.status_code == 200, updated.text
+        updated_event = next(
+            event for event in _activity_page(client, headers, task_id)["activities"]
+            if event["event_type"] == "task.updated"
+        )
+        assert updated_event["request_id"] == updated.headers["X-Request-ID"]
+        assert updated_event["summary"] == {"changed_fields": ["title"]}
+
+        status_changed = client.patch(
+            f"/api/tasks/{task_id}", headers=headers, json={"status": "in_progress"}
+        )
+        assert status_changed.status_code == 200, status_changed.text
+        status_event = next(
+            event for event in _activity_page(client, headers, task_id)["activities"]
+            if event["event_type"] == "task.status_changed"
+        )
+        assert status_event["request_id"] == status_changed.headers["X-Request-ID"]
+        assert status_event["summary"] == {
+            "changed_fields": ["status"], "status_before": "todo", "status_after": "in_progress"
+        }
+
+        report_content = f"Private report content {uuid4().hex}"
+        report_response = client.post(
+            f"/api/tasks/{task_id}/reports", headers=headers, json={"content": report_content}
+        )
+        assert report_response.status_code == 201, report_response.text
+        assert report_response.json()["report"]["actor_name"] == headers["X-Tasklutein-Access-Email"]
+        report = report_response.json()["report"]
+        current = client.get(f"/api/tasks/{task_id}", headers=headers)
+        assert current.status_code == 200
+        assert current.json()["task"]["updated_at"] == status_changed.json()["task"]["updated_at"]
+
+        archived = client.delete(f"/api/tasks/{task_id}", headers=headers, params={"history": "keep"})
+        assert archived.status_code == 204, archived.text
+        all_events = _activity_page(client, headers, task_id)["activities"]
+        assert len(all_events) == 5
+        assert {event["event_type"] for event in all_events} == {
+            "task.created", "task.updated", "task.status_changed", "report.created", "task.deleted"
+        }
+        report_event = next(event for event in all_events if event["event_type"] == "report.created")
+        assert report_event["request_id"] == report_response.headers["X-Request-ID"]
+        assert report_event["summary"] == {"report_id": report["id"]}
+        assert report_content not in str(all_events)
+        deleted_event = next(event for event in all_events if event["event_type"] == "task.deleted")
+        assert deleted_event["request_id"] == archived.headers["X-Request-ID"]
+        assert deleted_event["actor_type"] == "user"
+
+
+def test_postgres_archive_preserves_full_task_and_report_snapshot(postgres_database: str):
+    command.upgrade(alembic_config(), "head")
+    with TestClient(app) as client:
+        headers, _identity = _new_identity(client, "archive-snapshot")
+        task = _create_task(client, headers)
+        task_id = task["id"]
+        changed = client.patch(
+            f"/api/tasks/{task_id}",
+            headers=headers,
+            json={"title": f"Final {uuid4().hex}", "description": f"Final description {uuid4().hex}", "status": "done"},
+        )
+        assert changed.status_code == 200, changed.text
+        expected_task = changed.json()["task"]
+        reports_before = [_create_report(client, headers, task_id) for _ in range(3)]
+        archived = client.delete(f"/api/tasks/{task_id}", headers=headers, params={"history": "keep"})
+        assert archived.status_code == 204, archived.text
+
+        for response in (
+            client.get(f"/api/tasks/{task_id}", headers=headers),
+            client.patch(f"/api/tasks/{task_id}", headers=headers, json={"status": "todo"}),
+            client.get(f"/api/tasks/{task_id}/reports", headers=headers),
+            client.post(f"/api/tasks/{task_id}/reports", headers=headers, json={"content": f"late {uuid4().hex}"}),
+        ):
+            assert response.status_code == 404, response.text
+
+        detail = client.get(f"/api/history/tasks/{task_id}", headers=headers)
+        assert detail.status_code == 200, detail.text
+        archived_task = detail.json()["task"]
+        for field in ("id", "title", "description", "status", "created_at", "updated_at"):
+            assert archived_task[field] == expected_task[field]
+
+        reports_after = []
+        for offset in range(3):
+            page = client.get(
+                f"/api/history/tasks/{task_id}/reports", headers=headers, params={"limit": 1, "offset": offset}
+            )
+            assert page.status_code == 200, page.text
+            assert page.json()["total"] == 3
+            reports_after.extend(page.json()["reports"])
+        expected_reports = {(r["id"], r["task_id"], r["content"]) for r in reports_before}
+        assert {(r["id"], r["task_id"], r["content"]) for r in reports_after} == expected_reports
+
+        with create_engine(postgres_database).connect() as connection:
+            archived_at = connection.scalar(text("SELECT archived_at FROM tasks WHERE id = :id"), {"id": task_id})
+            persisted_reports = connection.execute(
+                text("SELECT id, task_id, content FROM reports WHERE task_id = :id"), {"id": task_id}
+            ).all()
+        assert archived_at is not None and archived_at.utcoffset() is not None
+        assert {(str(r.id), str(r.task_id), r.content) for r in persisted_reports} == expected_reports
+
+
+def test_postgres_history_cleanup_and_physical_delete_have_distinct_semantics(postgres_database: str):
+    command.upgrade(alembic_config(), "head")
+    with TestClient(app) as client:
+        headers, _identity = _new_identity(client, "cleanup-contract")
+
+        current = _create_task(client, headers)
+        current_id = current["id"]
+        _create_report(client, headers, current_id)
+        assert _task_counts(postgres_database, current_id) == (1, 1, 2)
+        cleared_current = client.delete(f"/api/history/tasks/{current_id}", headers=headers)
+        assert cleared_current.status_code == 204, cleared_current.text
+        current_after_cleanup = client.get(f"/api/tasks/{current_id}", headers=headers)
+        assert current_after_cleanup.status_code == 200
+        assert current_after_cleanup.json()["task"] == current
+        assert _task_counts(postgres_database, current_id) == (1, 0, 0)
+        assert client.get(f"/api/tasks/{current_id}/reports", headers=headers).json()["total"] == 0
+
+        archived = _create_task(client, headers)
+        archived_id = archived["id"]
+        _create_report(client, headers, archived_id)
+        deleted = client.delete(f"/api/tasks/{archived_id}", headers=headers, params={"history": "keep"})
+        assert deleted.status_code == 204, deleted.text
+        assert _task_counts(postgres_database, archived_id) == (1, 1, 3)
+        cleared_archived = client.delete(f"/api/history/tasks/{archived_id}", headers=headers)
+        assert cleared_archived.status_code == 204, cleared_archived.text
+        assert _task_counts(postgres_database, archived_id) == (0, 0, 0)
+        assert client.get(f"/api/tasks/{archived_id}", headers=headers).status_code == 404
+        assert client.get(f"/api/history/tasks/{archived_id}", headers=headers).status_code == 404
+        assert client.get(f"/api/history/tasks/{archived_id}/reports", headers=headers).status_code == 404
+
+        physical = _create_task(client, headers)
+        physical_id = physical["id"]
+        _create_report(client, headers, physical_id)
+        physically_deleted = client.delete(
+            f"/api/tasks/{physical_id}", headers=headers, params={"history": "delete"}
+        )
+        assert physically_deleted.status_code == 204, physically_deleted.text
+        assert _task_counts(postgres_database, physical_id) == (0, 0, 0)
+        assert client.get("/api/activity", headers=headers, params={"task_id": physical_id}).json()["total"] == 0
+
+
+def test_postgres_activity_deletion_and_history_reads_are_workspace_scoped(postgres_database: str):
+    command.upgrade(alembic_config(), "head")
+    with TestClient(app) as client:
+        alice_headers, _alice = _new_identity(client, "history-owner")
+        bob_headers, _bob = _new_identity(client, "history-outsider")
+        task = _create_task(client, alice_headers)
+        task_id = task["id"]
+        report = _create_report(client, alice_headers, task_id)
+        active_owner_events = _activity_page(client, alice_headers, task_id)
+        assert active_owner_events["total"] == 2
+        report_event_id = next(
+            event["id"] for event in active_owner_events["activities"] if event["event_type"] == "report.created"
+        )
+        assert client.get("/api/activity", headers=bob_headers).json()["total"] == 0
+        assert client.get(f"/api/tasks/{task_id}", headers=bob_headers).status_code == 404
+        assert client.patch(f"/api/tasks/{task_id}", headers=bob_headers, json={"status": "done"}).status_code == 404
+        assert client.get(f"/api/tasks/{task_id}/reports", headers=bob_headers).status_code == 404
+        assert client.delete(f"/api/activity/{report_event_id}", headers=bob_headers).status_code == 404
+        assert client.delete(f"/api/history/tasks/{task_id}", headers=bob_headers).status_code == 404
+        assert client.delete(
+            f"/api/tasks/{task_id}", headers=bob_headers, params={"history": "delete"}
+        ).status_code == 404
+        archived = client.delete(f"/api/tasks/{task_id}", headers=alice_headers, params={"history": "keep"})
+        assert archived.status_code == 204, archived.text
+
+        owner_activity = _activity_page(client, alice_headers, task_id)
+        assert owner_activity["total"] == 3
+        report_event_id = next(
+            event["id"] for event in owner_activity["activities"] if event["event_type"] == "report.created"
+        )
+        assert client.get("/api/activity", headers=bob_headers).json()["total"] == 0
+        assert client.get(f"/api/tasks/{task_id}", headers=bob_headers).status_code == 404
+        assert client.patch(f"/api/tasks/{task_id}", headers=bob_headers, json={"status": "done"}).status_code == 404
+        assert client.get(f"/api/tasks/{task_id}/reports", headers=bob_headers).status_code == 404
+        assert client.get(f"/api/history/tasks/{task_id}", headers=bob_headers).status_code == 404
+        assert client.get(f"/api/history/tasks/{task_id}/reports", headers=bob_headers).status_code == 404
+        assert client.delete(f"/api/activity/{report_event_id}", headers=bob_headers).status_code == 404
+        assert client.delete(f"/api/history/tasks/{task_id}", headers=bob_headers).status_code == 404
+        assert client.delete(
+            f"/api/tasks/{task_id}", headers=bob_headers, params={"history": "delete"}
+        ).status_code == 404
+        assert _activity_page(client, alice_headers, task_id)["total"] == 3
+
+        removed = client.delete(f"/api/activity/{report_event_id}", headers=alice_headers)
+        assert removed.status_code == 204, removed.text
+        remaining = _activity_page(client, alice_headers, task_id)
+        assert remaining["total"] == 2
+        assert report_event_id not in {event["id"] for event in remaining["activities"]}
+        archived_reports = client.get(f"/api/history/tasks/{task_id}/reports", headers=alice_headers)
+        assert archived_reports.status_code == 200
+        assert [item["id"] for item in archived_reports.json()["reports"]] == [report["id"]]
+        assert _task_counts(postgres_database, task_id) == (1, 1, 2)
+
+
+def test_postgres_activity_insert_failure_rolls_back_task_update(postgres_database: str):
+    command.upgrade(alembic_config(), "head")
+    with TestClient(app, raise_server_exceptions=False) as client:
+        headers, _identity = _new_identity(client, "activity-failure")
+        task = _create_task(client, headers)
+        task_id = task["id"]
+        trigger_suffix = uuid4().hex
+        function_name = f"reject_task_update_activity_{trigger_suffix}"
+        trigger_name = f"reject_task_update_activity_{trigger_suffix}"
+        with create_engine(postgres_database).begin() as connection:
+            connection.execute(
+                text(
+                    f"CREATE FUNCTION {function_name}() RETURNS trigger LANGUAGE plpgsql AS $$ "
+                    "BEGIN IF NEW.event_type = 'task.updated' THEN RAISE EXCEPTION 'forced activity failure'; "
+                    "END IF; RETURN NEW; END $$"
+                )
+            )
+            connection.execute(
+                text(
+                    f"CREATE TRIGGER {trigger_name} BEFORE INSERT ON activities "
+                    f"FOR EACH ROW EXECUTE FUNCTION {function_name}()"
+                )
+            )
+        try:
+            failed = client.patch(
+                f"/api/tasks/{task_id}", headers=headers, json={"title": f"Rollback {uuid4().hex}"}
+            )
+            assert failed.status_code == 500
+        finally:
+            with create_engine(postgres_database).begin() as connection:
+                connection.execute(text(f"DROP TRIGGER IF EXISTS {trigger_name} ON activities"))
+                connection.execute(text(f"DROP FUNCTION IF EXISTS {function_name}()"))
+
+        after_failure = client.get(f"/api/tasks/{task_id}", headers=headers)
+        assert after_failure.status_code == 200
+        assert after_failure.json()["task"] == task
+        assert _activity_page(client, headers, task_id)["total"] == 1
+
+
+def test_postgres_concurrent_report_and_archive_leave_consistent_history(postgres_database: str):
+    command.upgrade(alembic_config(), "head")
+    with TestClient(app) as client:
+        headers, _identity = _new_identity(client, "archive-race")
+        task = _create_task(client, headers)
+        task_id = task["id"]
+        existing_report = _create_report(client, headers, task_id)
+
+    barrier = threading.Barrier(2)
+    racing_content = f"Racing report {uuid4().hex}"
+
+    def create_racing_report():
+        with TestClient(app) as client:
+            barrier.wait(timeout=10)
+            return client.post(
+                f"/api/tasks/{task_id}/reports", headers=headers, json={"content": racing_content}
+            )
+
+    def archive_task():
+        with TestClient(app) as client:
+            barrier.wait(timeout=10)
+            return client.delete(f"/api/tasks/{task_id}", headers=headers, params={"history": "keep"})
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        report_future = executor.submit(create_racing_report)
+        archive_future = executor.submit(archive_task)
+        report_response = report_future.result(timeout=30)
+        archive_response = archive_future.result(timeout=30)
+
+    assert archive_response.status_code == 204, archive_response.text
+    assert report_response.status_code in {201, 404}, report_response.text
+    with TestClient(app) as client:
+        reports = client.get(f"/api/history/tasks/{task_id}/reports", headers=headers)
+        assert reports.status_code == 200, reports.text
+        assert reports.json()["total"] == (2 if report_response.status_code == 201 else 1)
+        contents = {item["content"] for item in reports.json()["reports"]}
+        expected_contents = {existing_report["content"]}
+        if report_response.status_code == 201:
+            expected_contents.add(racing_content)
+        assert contents == expected_contents
+        event_types = [event["event_type"] for event in _activity_page(client, headers, task_id)["activities"]]
+        assert event_types.count("task.deleted") == 1
+        assert event_types.count("report.created") == (2 if report_response.status_code == 201 else 1)
+        assert client.get(f"/api/tasks/{task_id}", headers=headers).status_code == 404
+
+    with create_engine(postgres_database).connect() as connection:
+        orphan_reports = connection.scalar(
+            text("SELECT count(*) FROM reports r LEFT JOIN tasks t ON t.id = r.task_id WHERE t.id IS NULL")
+        )
+        orphan_activities = connection.scalar(
+            text(
+                "SELECT count(*) FROM activities a LEFT JOIN tasks t ON t.id = a.task_id "
+                "WHERE t.id IS NULL OR a.workspace_id <> t.workspace_id"
+            )
+        )
+    assert orphan_reports == 0
+    assert orphan_activities == 0
+
+
+def test_postgres_concurrent_task_update_and_archive_freeze_one_consistent_snapshot(postgres_database: str):
+    command.upgrade(alembic_config(), "head")
+    with TestClient(app) as client:
+        headers, _identity = _new_identity(client, "update-archive-race")
+        task = _create_task(client, headers)
+        task_id = task["id"]
+
+    barrier = threading.Barrier(2)
+
+    def update_task():
+        with TestClient(app) as client:
+            barrier.wait(timeout=10)
+            return client.patch(f"/api/tasks/{task_id}", headers=headers, json={"status": "done"})
+
+    def archive_task():
+        with TestClient(app) as client:
+            barrier.wait(timeout=10)
+            return client.delete(f"/api/tasks/{task_id}", headers=headers, params={"history": "keep"})
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        update_future = executor.submit(update_task)
+        archive_future = executor.submit(archive_task)
+        update_response = update_future.result(timeout=30)
+        archive_response = archive_future.result(timeout=30)
+
+    assert update_response.status_code in {200, 404}, update_response.text
+    assert archive_response.status_code == 204, archive_response.text
+    with TestClient(app) as client:
+        snapshot = client.get(f"/api/history/tasks/{task_id}", headers=headers)
+        assert snapshot.status_code == 200, snapshot.text
+        expected_status = "done" if update_response.status_code == 200 else "todo"
+        assert snapshot.json()["task"]["status"] == expected_status
+        event_types = [event["event_type"] for event in _activity_page(client, headers, task_id)["activities"]]
+        assert event_types.count("task.created") == 1
+        assert event_types.count("task.deleted") == 1
+        assert event_types.count("task.status_changed") == (1 if update_response.status_code == 200 else 0)
+        assert client.get(f"/api/tasks/{task_id}", headers=headers).status_code == 404
+
+
+def test_postgres_concurrent_report_and_physical_delete_remove_the_whole_group(postgres_database: str):
+    command.upgrade(alembic_config(), "head")
+    with TestClient(app) as client:
+        headers, _identity = _new_identity(client, "physical-delete-race")
+        task = _create_task(client, headers)
+        task_id = task["id"]
+        _create_report(client, headers, task_id)
+
+    barrier = threading.Barrier(2)
+    racing_content = f"Report racing physical delete {uuid4().hex}"
+
+    def create_racing_report():
+        with TestClient(app) as client:
+            barrier.wait(timeout=10)
+            return client.post(
+                f"/api/tasks/{task_id}/reports", headers=headers, json={"content": racing_content}
+            )
+
+    def delete_task_and_history():
+        with TestClient(app) as client:
+            barrier.wait(timeout=10)
+            return client.delete(
+                f"/api/tasks/{task_id}", headers=headers, params={"history": "delete"}
+            )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        report_future = executor.submit(create_racing_report)
+        delete_future = executor.submit(delete_task_and_history)
+        report_response = report_future.result(timeout=30)
+        delete_response = delete_future.result(timeout=30)
+
+    assert report_response.status_code in {201, 404}, report_response.text
+    assert delete_response.status_code == 204, delete_response.text
+    assert _task_counts(postgres_database, task_id) == (0, 0, 0)
+    with TestClient(app) as client:
+        assert client.get(f"/api/tasks/{task_id}", headers=headers).status_code == 404
+        assert client.get(f"/api/history/tasks/{task_id}", headers=headers).status_code == 404
+        assert client.get("/api/activity", headers=headers, params={"task_id": task_id}).json()["total"] == 0
+
+
+def test_postgres_concurrent_report_and_current_history_cleanup_leave_no_orphans(postgres_database: str):
+    command.upgrade(alembic_config(), "head")
+    with TestClient(app) as client:
+        headers, _identity = _new_identity(client, "cleanup-race")
+        task = _create_task(client, headers)
+        task_id = task["id"]
+        _create_report(client, headers, task_id)
+
+    barrier = threading.Barrier(2)
+    racing_content = f"Report racing cleanup {uuid4().hex}"
+
+    def create_racing_report():
+        with TestClient(app) as client:
+            barrier.wait(timeout=10)
+            return client.post(
+                f"/api/tasks/{task_id}/reports", headers=headers, json={"content": racing_content}
+            )
+
+    def clear_history():
+        with TestClient(app) as client:
+            barrier.wait(timeout=10)
+            return client.delete(f"/api/history/tasks/{task_id}", headers=headers)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        report_future = executor.submit(create_racing_report)
+        cleanup_future = executor.submit(clear_history)
+        report_response = report_future.result(timeout=30)
+        cleanup_response = cleanup_future.result(timeout=30)
+
+    assert report_response.status_code == 201, report_response.text
+    assert cleanup_response.status_code == 204, cleanup_response.text
+    with TestClient(app) as client:
+        assert client.get(f"/api/tasks/{task_id}", headers=headers).status_code == 200
+        reports = client.get(f"/api/tasks/{task_id}/reports", headers=headers)
+        assert reports.status_code == 200, reports.text
+        report_ids = {report["id"] for report in reports.json()["reports"]}
+        assert len(report_ids) in {0, 1}
+        activities = _activity_page(client, headers, task_id)
+        assert activities["total"] in {0, 1}
+        assert all(event["event_type"] == "report.created" for event in activities["activities"])
+        assert {event["summary"]["report_id"] for event in activities["activities"]} == report_ids
+        if report_ids:
+            assert reports.json()["reports"][0]["content"] == racing_content
+
+    with create_engine(postgres_database).connect() as connection:
+        orphan_reports = connection.scalar(
+            text("SELECT count(*) FROM reports r LEFT JOIN tasks t ON t.id = r.task_id WHERE t.id IS NULL")
+        )
+        orphan_activities = connection.scalar(
+            text(
+                "SELECT count(*) FROM activities a LEFT JOIN tasks t ON t.id = a.task_id "
+                "WHERE t.id IS NULL OR a.workspace_id <> t.workspace_id"
+            )
+        )
+    assert orphan_reports == 0
+    assert orphan_activities == 0

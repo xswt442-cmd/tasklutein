@@ -12,8 +12,16 @@ This file records shipped features, fixes, compatibility changes, and upgrade re
 - 通过 Cloudflare Access 验证 Web 用户，并为每个用户建立独立个人工作区；任务、汇报、Overview 和 Agent 密钥按工作区隔离。
 - 在设置中创建、查看元数据并撤销个人 Agent 密钥；密钥明文仅在创建时显示一次，可设置到期时间。
 - 将 Web API 与远程 MCP 分到不同 Worker hostname；MCP 仅在专用主机的 `/mcp` 路径接受个人 Agent 密钥。
+- 新增历史页面，支持保留完整任务快照、查看归档任务的全部工作汇报，并按类型、来源和任务筛选活动记录。
+- 记录任务创建、更新、状态变化、归档和工作汇报活动；Overview 显示最近活动，报告和活动会显示已验证的用户或 Agent Key 名称，并允许删除单条活动或清理整组历史。
+
+**改进**
+- 将真实任务或汇报变更与活动记录放在同一数据库事务中；无实际值变化的任务更新不改更新时间，也不生成活动。
+- Agent 密钥支持编辑名称和到期时间；列表只回显 `tlu_` 后的 3 个字符，撤销后保留记录和状态。
 
 **升级说明**
+- 应用 Alembic 迁移 `0004_task_history` 以启用任务归档和活动记录；已有任务保持当前状态，迁移不会补造历史活动。
+- `DELETE /api/tasks/{id}` 省略 `history` 时仍沿用原有永久删除行为；新版 Web 界面会明确询问是否保留历史。
 - 旧共享工作区中未归属的任务需要维护者显式指派给一个已登录并建立工作区的用户；迁移保留任务和汇报，不会推断或拆分归属。旧汇报的用户及密钥归属保持为空。
 
 ### English
@@ -22,8 +30,16 @@ This file records shipped features, fixes, compatibility changes, and upgrade re
 - Authenticate Web users through Cloudflare Access and create an isolated personal workspace for each user; tasks, reports, Overview data, and Agent keys are scoped to that workspace.
 - Create, inspect metadata for, and revoke personal Agent keys in Settings; plaintext is displayed only at creation, with optional expiry.
 - Split the Web API and remote MCP across separate Worker hostnames; personal Agent keys are accepted for MCP only at `/mcp` on its dedicated host.
+- Added a History page for preserving complete task snapshots, reading all archived reports, and filtering activity by type, source, and task.
+- Recorded task creation, updates, status changes, archiving, and report creation; Overview shows recent activity, reports and activities show verified user or Agent key names, and users can delete one activity or clear a task's history group.
+
+**Improved**
+- Commit each real task or report change with its activity record in one database transaction; no-op task updates neither change the timestamp nor create activity.
+- Agent keys can be edited and revoked; lists expose only three key characters after `tlu_` and retain revoked records with their status.
 
 **Upgrade notes**
+- Apply Alembic migration `0004_task_history` to enable task archiving and activity records. Existing tasks remain current, and the migration does not fabricate historical activity.
+- Omitting `history` from `DELETE /api/tasks/{id}` retains the previous permanent-deletion behavior; the updated Web interface asks users to choose whether to preserve history.
 - Unassigned tasks in the former shared workspace require a maintainer to assign them explicitly to one signed-in user with a workspace. Migration preserves tasks and reports without inferring or splitting ownership. Legacy reports remain without user or key attribution.
 
 ## [0.1.1] - 2026-10-18

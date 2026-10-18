@@ -19,7 +19,9 @@ from sqlalchemy.orm import Session
 
 from .auth import Principal, require_principal
 from .database import get_db
+from .routers.activities import router as activity_router
 from .routers.agent_tokens import router as agent_token_router
+from .routers.history import router as history_router
 from .routers.overview import router as overview_router
 from .routers.reports import router as report_router
 from .routers.session import router as session_router
@@ -210,6 +212,8 @@ def ready(
 
 app.include_router(session_router)
 app.include_router(agent_token_router)
+app.include_router(activity_router)
+app.include_router(history_router)
 app.include_router(task_router)
 app.include_router(report_router)
 app.include_router(overview_router)

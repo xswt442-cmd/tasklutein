@@ -30,19 +30,25 @@ Web 与 MCP 使用不同的 Worker hostname。Web hostname 将 `/api` 和 `/api/
 
 网页用户通过 Cloudflare Access 验证。Worker 使用配置的 Access issuer、audience 和公开 JWKS 验证 `Cf-Access-Jwt-Assertion` 的 RS256 签名及 `iss`、`aud`、`exp`、`sub` 声明，并要求有效的 `email`。Worker 将验证后的 issuer、subject 和 email 作为内部 Header 发送给 FastAPI。FastAPI 仅在源站网关密钥通过验证后接受这些 Header；客户端直接提供的同名 Header 会先被 Worker 删除并覆盖。浏览器不使用业务 Bearer Token。`GET /api/health` 是无需用户身份的健康检查。
 
-FastAPI 以 Access issuer 与 subject 识别用户，并为首次访问的用户建立一个个人工作区。任务、汇报、Overview 统计和 Agent 密钥都按工作区筛选；跨工作区访问任务按不存在处理。报告来源、用户归属及 Agent 密钥归属由已验证身份写入，不读取客户端提交的归属字段。访问同一 Access 身份的 email 更新时会同步到用户记录。
+FastAPI 以 Access issuer 与 subject 识别用户，并为首次访问的用户建立一个个人工作区。任务、汇报、Overview 统计、最近活动和 Agent 密钥都按工作区筛选；跨工作区访问任务按不存在处理。报告来源、用户归属及 Agent 密钥归属由已验证身份写入，不读取客户端提交的归属字段。访问同一 Access 身份的 email 更新时会同步到用户记录。
 
-每个用户可在设置中创建多个个人 Agent 密钥，并设置可选到期时间或单独撤销。明文仅在创建响应中返回一次；数据库存储 SHA-256 摘要以及用于显示的前缀。远程 MCP 主机要求 `Authorization: Bearer <Agent key>`，并通过 `/api/agent/whoami` 验证密钥。密钥只访问其所属用户的个人工作区。MCP 不使用 Cloudflare Access 浏览器会话。
+每个用户可在设置中创建多个个人 Agent 密钥、编辑名称和到期时间，或单独撤销。明文仅在创建响应中返回一次；数据库存储 SHA-256 摘要以及用于显示的短前缀。密钥列表仅返回 `tlu_` 和后续 3 个字符；撤销后保留列表行并显示撤销状态。远程 MCP 主机要求 `Authorization: Bearer <Agent key>`，并通过 `/api/agent/whoami` 验证密钥。密钥只访问其所属用户的个人工作区。MCP 不使用 Cloudflare Access 浏览器会话。
 
 Worker 和源站分别验证 `ORIGIN_GATEWAY_TOKEN` / `EDGE_GATEWAY_TOKEN`（值相同）。FastAPI 和 MCP HTTP 在处理业务请求前验证网关密钥。数据库、FastAPI 和 Caddy 的宿主机端口仅绑定 `127.0.0.1`；MCP HTTP 端口不发布到宿主机。Cloudflare Tunnel hostname 即使可直接访问，没有网关密钥也不能访问 API 或 MCP 业务接口。
 
 ## 数据库、隔离与旧数据迁移
 
-PostgreSQL 是生产数据源。`apps/api/migrations/0001_init.sql` 为新卷初始化旧版基础表；`apps/api/alembic/` 管理版本化迁移。`0002_identity_workspace` 创建用户、个人工作区和 Agent 密钥表，并为旧任务增加可空的工作区关联及为汇报增加可空的身份归属。`0003_task_workspace_required` 将任务工作区关联设为必填。
+PostgreSQL 是生产数据源。`apps/api/migrations/0001_init.sql` 为新卷初始化旧版基础表；`apps/api/alembic/` 管理版本化迁移。`0002_identity_workspace` 创建用户、个人工作区和 Agent 密钥表，并为旧任务增加可空的工作区关联及为汇报增加可空的身份归属。`0003_task_workspace_required` 将任务工作区关联设为必填。`0004_task_history` 为任务增加可空的 UTC `archived_at`，并创建按工作区存储活动的表。
 
-迁移不会自动运行于 API 启动。升级旧数据库时，先将数据库迁移到 `0002_identity_workspace`，再让目标用户通过 Cloudflare Access 登录，以建立用户与个人工作区。若仍有未归属任务，维护者随后在执行 `0003_task_workspace_required` 时显式设置 `TASKLUTEIN_LEGACY_OWNER_ISSUER`、`TASKLUTEIN_LEGACY_OWNER_SUBJECT`、`TASKLUTEIN_LEGACY_OWNER_EMAIL`，并将 `TASKLUTEIN_LEGACY_TASKS_CONFIRM` 设置为 `assign-existing-tasks`。目标用户必须匹配这三个身份值、未被禁用且已有工作区，否则迁移会失败。迁移将所有未归属任务指派给该单一工作区，再将任务的工作区字段设为非空；不会猜测或拆分原共享数据。已有任务和汇报内容及报告来源会保留。旧报告没有可恢复的用户或密钥归属，其 `actor_user_id` 和 `agent_token_id` 继续为空。若不存在未归属任务，则不需要提供旧数据归属配置。
+迁移不会自动运行于 API 启动。升级旧数据库时，先将数据库迁移到 `0002_identity_workspace`，再让目标用户通过 Cloudflare Access 登录，以建立用户与个人工作区。若仍有未归属任务，维护者随后在执行 `0003_task_workspace_required` 时显式设置 `TASKLUTEIN_LEGACY_OWNER_ISSUER`、`TASKLUTEIN_LEGACY_OWNER_SUBJECT`、`TASKLUTEIN_LEGACY_OWNER_EMAIL`，并将 `TASKLUTEIN_LEGACY_TASKS_CONFIRM` 设置为 `assign-existing-tasks`。目标用户必须匹配这三个身份值、未被禁用且已有工作区，否则迁移会失败。迁移将所有未归属任务指派给该单一工作区，再将任务的工作区字段设为非空；不会猜测或拆分原共享数据。已有任务和汇报内容及报告来源会保留。旧报告没有可恢复的用户或密钥归属，其 `actor_user_id` 和 `agent_token_id` 继续为空。随后应用 `0004_task_history`；已有任务的 `archived_at` 保持为空，因此继续作为当前任务，且迁移不补造活动或推断过去的完成时间。若不存在未归属任务，则不需要提供旧数据归属配置。
 
-任务保存标题、说明、状态、时间戳和工作区 ID；汇报通过级联外键关联任务。FastAPI 负责校验、分页、工作区统计和数据库写入。MCP 仅调用 REST，让网页与 Agent 共用相同的业务规则。
+任务保存标题、说明、状态、时间戳和工作区 ID；汇报通过级联外键关联任务。`archived_at` 为空的任务属于当前列表、搜索、Overview 和现有 MCP 任务工具；所有这些查询都排除归档任务。归档会冻结原任务行，保留任务 ID 和全部字段，并保留所有关联汇报。归档记录及汇报只能通过只读历史接口访问。清理归档任务历史会物理删除任务、汇报和活动；清理仍存在任务的历史只删除其汇报与活动，保留任务状态和字段。
+
+FastAPI 在每次实际任务或报告变更的同一数据库事务中写入活动。事件类型包括 `task.created`、`task.updated`、`task.status_changed`、`task.deleted` 和 `report.created`；无变化的任务 PATCH 不更新 `updated_at`，也不产生事件。一次同时修改状态和其他字段的 PATCH 只写一条 `task.status_changed`。活动摘要只记录受控变更字段和状态前后值，不复制任务说明、报告正文或密钥。活动可由用户删除，是业务历史记录，不提供不可篡改的安全审计保证。
+
+任务更新、追加报告、归档和清理整组历史会锁定目标任务并检查归档状态，确保归档后不会再写入报告。任务数据与活动共用事务，活动写入失败会回滚对应业务变更。活动与历史查询仍由 FastAPI 按 M1.5 的 `workspace_id` 和已验证 Principal 限定；报告与活动在可确认时显示已验证用户邮箱或 Agent Key 名称，旧报告无法恢复的身份保持未知并只显示来源。MCP 仅调用 REST，让网页与 Agent 共用相同的业务规则。
+
+首次真实归档后，忽略 `archived_at` 的旧后端可能把归档任务重新显示在当前列表中。回退版本必须保留归档过滤和工作区隔离；移除历史 schema 需要单独审查，不能通过删除历史记录来回退。
 
 ## MCP 传输与限制
 
