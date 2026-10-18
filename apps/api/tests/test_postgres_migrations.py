@@ -133,7 +133,7 @@ def test_empty_postgres_upgrades_and_serves_real_api(postgres_database: str):
 
 
 def test_existing_initial_schema_can_be_stamped_without_losing_api_data(postgres_database: str):
-    initial_schema = Path(__file__).parents[2] / "migrations" / "0001_init.sql"
+    initial_schema = Path(__file__).parents[1] / "migrations" / "0001_init.sql"
     connection_url = database_url.set(drivername="postgresql").render_as_string(hide_password=False)
     with psycopg.connect(connection_url) as connection:
         connection.execute(initial_schema.read_text(encoding="utf-8"), prepare=False)

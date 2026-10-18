@@ -8,11 +8,19 @@ Cloudflare **only serves the web frontend and public ingress**. The Worker serve
 
 The Tencent Cloud environment runs Docker Compose services: `api` (FastAPI/SQLAlchemy), `db` (PostgreSQL), `mcp` (Node.js/MCP SDK Streamable HTTP), `router` (Caddy), and optionally `tunnel` (cloudflared).
 
-```text
-Browser -> https://app.example.com/ -- Cloudflare Worker Assets -> React
-Browser -> https://app.example.com/api/* -- Worker --> Tunnel --> Caddy --> FastAPI --> PostgreSQL
-Agent   -> https://app.example.com/mcp   -- Worker --> Tunnel --> Caddy --> MCP HTTP --> FastAPI
-Local Agent -> local MCP stdio adapter --> Worker /api/* or local FastAPI
+```mermaid
+flowchart LR
+    Browser[Browser] --> Worker[Cloudflare Worker]
+    Remote[Remote Agent] --> Worker
+    Worker --> Assets[React Assets]
+    Worker --> Tunnel[Cloudflare Tunnel]
+    Tunnel --> Caddy
+    Caddy --> API[FastAPI]
+    Caddy --> MCP[MCP HTTP]
+    MCP -->|REST| API
+    API --> DB[(PostgreSQL)]
+    Local[Local Agent] --> Stdio[MCP stdio]
+    Stdio -->|REST| API
 ```
 
 ## Network and Authentication Boundaries
@@ -25,22 +33,22 @@ A Cloudflare Tunnel origin hostname may be reachable directly, but without the g
 
 ## Database and API as Source of Truth
 
-PostgreSQL is the production source of truth. `migrations/0001_init.sql` initializes the existing Compose volume setup; `backend/alembic/` contains the versioned migration baseline. Existing databases must be inspected before an operator stamps that baseline. Tasks store title, description, status, and timestamps; reports reference tasks through a cascading foreign key. FastAPI owns validation, pagination, full-workspace summaries, and all writes. MCP calls REST, preserving one business-rule boundary for browsers and agents.
+PostgreSQL is the production source of truth. `apps/api/migrations/0001_init.sql` initializes the existing Compose volume setup; `apps/api/alembic/` contains the versioned migration baseline. Existing databases must be inspected before an operator stamps that baseline. Tasks store title, description, status, and timestamps; reports reference tasks through a cascading foreign key. FastAPI owns validation, pagination, full-workspace summaries, and all writes. MCP calls REST, preserving one business-rule boundary for browsers and agents.
 
 ## MCP Transports and Limits
 
-`packages/mcp/src/server.ts` registers six tools, including paginated task/report readers. `index.ts` uses stdio. `http.ts` implements the Streamable HTTP server on Tencent. The HTTP transport is stateless, with an independent transport per request: suitable for scaling but no cross-request session state, server-initiated notifications, or event replay. It uses a static Bearer Token; OAuth, dynamic client registration, and public MCP Registry publication are not implemented.
+`apps/mcp/src/server.ts` registers six tools, including paginated task/report readers. `index.ts` uses stdio. `http.ts` implements the Streamable HTTP server on Tencent. The HTTP transport is stateless, with an independent transport per request: suitable for scaling but no cross-request session state, server-initiated notifications, or event replay. It uses a static Bearer Token; OAuth, dynamic client registration, and public MCP Registry publication are not implemented.
 
 The Worker forwards requests and streaming responses. MCP GET/SSE features depend on server transport support. The current stateless server primarily uses POST/JSON, and must not be advertised as a durable resumable SSE session server. Remote MCP clients must support custom Authorization headers.
 
 ## Code Boundaries and Extensibility
 
-- `apps/edge/`: Worker entrypoint, HTTP gateway, static Asset binding.
-- `apps/web/`: React, Vite/Tailwind, same-origin `/api` client.
-- `backend/app/`: business API, token auth, ORM, response models.
-- `packages/mcp/`: stdio + HTTP adapters calling REST, no business SQL.
-- `migrations/`: PostgreSQL DDL; `deploy/`: Caddy/Docker/Tunnel.
-- `backend/alembic/`: versioned PostgreSQL migrations; `migrations/0001_init.sql` remains the initial volume bootstrap schema.
-- `test/` and `backend/tests/`: gateway, MCP, API, and auth checks.
+- `apps/web/`: React interface and Vite/Tailwind build.
+- `apps/edge/`: Cloudflare Worker, HTTP gateway, and static Assets binding.
+- `apps/api/`: FastAPI application, PostgreSQL models, Alembic migrations, and API tests.
+- `apps/mcp/`: Node MCP stdio/HTTP adapters using the FastAPI REST contract.
+- `apps/api/migrations/0001_init.sql`: SQL bootstrap for a new PostgreSQL volume.
+- `deploy/`: Docker Compose, Caddy, and Tunnel configuration.
+- `scripts/` and `test/`: repository operations and cross-service integration tests.
 
-MCP, FastAPI, and PostgreSQL can be scaled or separated independently while keeping the Worker routing contract stable. Before production growth, add scoped user authorization, backup policy, credential rotation, end-to-end deployment tests, and external rate limiting.
+Business rules and database access remain in FastAPI as the API and MCP services run independently behind the gateway.

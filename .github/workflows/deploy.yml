@@ -34,17 +34,17 @@ jobs:
           python-version: '3.12'
           cache: pip
           cache-dependency-path: |
-            backend/requirements.txt
-            backend/requirements-dev.txt
+            apps/api/requirements.txt
+            apps/api/requirements-dev.txt
       - name: Install Python dependencies used by Web integration tests
-        run: python -m pip install -r backend/requirements-dev.txt
+        run: python -m pip install -r apps/api/requirements-dev.txt
       - run: npm ci
       - name: Verify source before deployment
         run: npm run check
       - name: Verify FastAPI tests and lint
         run: |
           python -m pytest -q
-          ruff check backend/app backend/tests
+          ruff check apps/api/app apps/api/tests
       - name: Check required GitHub Cloudflare credentials
         shell: bash
         env:

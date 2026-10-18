@@ -1,4 +1,4 @@
-"""Database models; the initial production schema is in migrations/0001_init.sql."""
+"""Database models; the initial production schema is in apps/api/migrations/0001_init.sql."""
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 

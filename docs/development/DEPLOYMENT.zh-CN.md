@@ -17,9 +17,9 @@ Production 和 Preview 使用独立的 Worker 配置、Tunnel、Compose 项目�
 ```sh
 npm ci
 npm run check
-python -m pip install -r backend/requirements-dev.txt
+python -m pip install -r apps/api/requirements-dev.txt
 python -m pytest -q
-ruff check backend/app backend/tests
+ruff check apps/api/app apps/api/tests
 docker compose -f deploy/compose.yml --env-file deploy/.env.preview.example config --quiet
 ```
 
@@ -29,7 +29,7 @@ docker compose -f deploy/compose.yml --env-file deploy/.env.preview.example conf
 
 ## PostgreSQL 基线与迁移
 
-Docker Compose 的新建数据库卷使用 `migrations/0001_init.sql` 初始化，该 Schema 对应 Alembic `0001_baseline`。应用启动不自动执行迁移。
+Docker Compose 的新建数据库卷使用 `apps/api/migrations/0001_init.sql` 初始化，该 Schema 对应 Alembic `0001_baseline`。应用启动不自动执行迁移。
 
 - **已有业务表的数据库**：先确认环境、数据卷、完整备份与恢复途径；检查表、列、约束、外键、默认值和索引与基线一致。经批准后执行：
 

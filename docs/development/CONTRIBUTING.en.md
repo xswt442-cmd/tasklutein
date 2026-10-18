@@ -8,11 +8,11 @@ Use `dev` for day-to-day development; `main` is the release branch. Merge featur
 
 ## TypeScript, Worker, and MCP
 
-Requires Node.js 24+, Python 3.12+, and lockfile `package-lock.json`. The browser workflow test launches a local FastAPI process and uses its own file-backed SQLite database; install `backend/requirements-dev.txt` before running the complete check:
+Requires Node.js 24+, Python 3.12+, and lockfile `package-lock.json`. The browser workflow test launches a local FastAPI process and uses its own file-backed SQLite database; install `apps/api/requirements-dev.txt` before running the complete check:
 
 ```sh
 npm ci
-python -m pip install -r backend/requirements-dev.txt
+python -m pip install -r apps/api/requirements-dev.txt
 npm run check
 ```
 
@@ -20,11 +20,11 @@ npm run check
 
 ## FastAPI and Database
 
-Requires Python 3.12+, an isolated environment, and `backend/requirements-dev.txt`. Run from the repository root:
+Requires Python 3.12+, an isolated environment, and `apps/api/requirements-dev.txt`. Run from the repository root:
 
 ```sh
 python -m pytest -q
-ruff check backend/app backend/tests
+ruff check apps/api/app apps/api/tests
 ```
 
 API behavior tests use isolated SQLite; PostgreSQL migration tests create and clean tables in an explicitly named disposable `*_test` database. GitHub Actions provides a fresh PostgreSQL 17 service and requires these integration tests to run. A local Postgres test database is opt-in:
@@ -38,7 +38,7 @@ python -m pytest -q
 
 The fixture refuses to run unless its connection names the same local `*_test` database and explicit reset permission is set. It drops the `tasks`, `reports`, and `alembic_version` tables from that database. Never point it at Production or Preview. API tests cover task CRUD, server-stamped report authorship, both access tokens, gateway-secret enforcement, filtering, pagination, and overview totals. PostgreSQL tests verify Alembic upgrades, preservation of an existing `0001_init.sql` schema and records when stamped, over-limit listing, and API writes on PostgreSQL. SQLite success does not verify Docker, Tunnel, or a live deployment.
 
-Alembic baseline: a blank PostgreSQL database runs `alembic upgrade head`. A database created by the existing `migrations/0001_init.sql` must be inspected and compared with `0001_baseline` before an operator runs `alembic stamp 0001_baseline`. Do not stamp an unverified database or run migrations automatically at application startup.
+Alembic baseline: a blank PostgreSQL database runs `alembic upgrade head`. A database created by the existing `apps/api/migrations/0001_init.sql` must be inspected and compared with `0001_baseline` before an operator runs `alembic stamp 0001_baseline`. Do not stamp an unverified database or run migrations automatically at application startup.
 
 ## Documentation and Security
 

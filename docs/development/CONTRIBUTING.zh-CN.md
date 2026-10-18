@@ -8,11 +8,11 @@
 
 ## TypeScript、Worker 与 MCP
 
-需要 Node.js 24+ 和 Python 3.12+，锁文件为 `package-lock.json`。浏览器工作流测试会启动本机 FastAPI，并使用独立文件版 SQLite；运行完整检查前安装 `backend/requirements-dev.txt`：
+需要 Node.js 24+ 和 Python 3.12+，锁文件为 `package-lock.json`。浏览器工作流测试会启动本机 FastAPI，并使用独立文件版 SQLite；运行完整检查前安装 `apps/api/requirements-dev.txt`：
 
 ```sh
 npm ci
-python -m pip install -r backend/requirements-dev.txt
+python -m pip install -r apps/api/requirements-dev.txt
 npm run check
 ```
 
@@ -20,11 +20,11 @@ npm run check
 
 ## FastAPI 与数据库
 
-需要 Python 3.12+，使用独立虚拟环境并安装 `backend/requirements-dev.txt`，仓库根目录运行：
+需要 Python 3.12+，使用独立虚拟环境并安装 `apps/api/requirements-dev.txt`，仓库根目录运行：
 
 ```sh
 python -m pytest -q
-ruff check backend/app backend/tests
+ruff check apps/api/app apps/api/tests
 ```
 
 API 行为测试使用隔离 SQLite；PostgreSQL 迁移测试只在显式命名的 `*_test` 专用数据库中创建和清理表。GitHub Actions 使用临时 PostgreSQL 17 服务，并要求迁移集成测试必须运行。需要本地 PostgreSQL 时显式配置：
@@ -38,7 +38,7 @@ python -m pytest -q
 
 测试夹具会核对 URL 中的本机主机和 `*_test` 数据库名，并要求显式允许重置；随后会删除该数据库中的 `tasks`、`reports` 和 `alembic_version` 表。不得指向 Production 或 Preview。API 测试覆盖任务 CRUD、后端生成的汇报来源、双令牌、网关密钥、筛选、分页和全库统计。PostgreSQL 测试验证 Alembic 升级、接管原有 `0001_init.sql` Schema 后保留既有数据、超出旧列表上限的数据读取，以及在 PostgreSQL 上通过 API 写入。SQLite 成功不能证明 Docker、Tunnel 或在线服务部署正常。
 
-Alembic 基线：全新空 PostgreSQL 执行 `alembic upgrade head`。采用旧版 `migrations/0001_init.sql` 建立的数据库必须先检查并确认符合 `0001_baseline`，再由维护者运行 `alembic stamp 0001_baseline`。不得给未核对的数据库直接 stamp，也不在应用启动时自动执行迁移。
+Alembic 基线：全新空 PostgreSQL 执行 `alembic upgrade head`。采用旧版 `apps/api/migrations/0001_init.sql` 建立的数据库必须先检查并确认符合 `0001_baseline`，再由维护者运行 `alembic stamp 0001_baseline`。不得给未核对的数据库直接 stamp，也不在应用启动时自动执行迁移。
 
 ## 文档与安全
 

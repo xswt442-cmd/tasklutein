@@ -18,6 +18,6 @@
 
 ## Verification and permissions
 
-- Run checks appropriate to the changes. Project verification includes `npm run check`, `python -m pytest -q`, and `ruff check backend/app backend/tests`. Worker dry-runs and SQLite tests do not validate a running production deployment.
+- Run checks appropriate to the changes. Project verification includes `npm run check`, `python -m pytest -q`, and `ruff check apps/api/app apps/api/tests`. Worker dry-runs and SQLite tests do not validate a running production deployment.
 - Keep `icons/` intact. `testplace/` is ignored local scratch space and must not be committed.
 - Commit, push, branch changes, resets, tags, releases, deployments, server modifications, secret rotation, and production data operations require explicit authorization within the current task. Do not infer continuing authorization from previous work.

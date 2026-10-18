@@ -17,9 +17,9 @@ Run from the repository root:
 ```sh
 npm ci
 npm run check
-python -m pip install -r backend/requirements-dev.txt
+python -m pip install -r apps/api/requirements-dev.txt
 python -m pytest -q
-ruff check backend/app backend/tests
+ruff check apps/api/app apps/api/tests
 docker compose -f deploy/compose.yml --env-file deploy/.env.preview.example config --quiet
 ```
 
@@ -29,7 +29,7 @@ docker compose -f deploy/compose.yml --env-file deploy/.env.preview.example conf
 
 ## PostgreSQL Baseline and Migrations
 
-Docker Compose initializes a new database volume from `migrations/0001_init.sql`; that schema corresponds to Alembic revision `0001_baseline`. Application startup does not run migrations.
+Docker Compose initializes a new database volume from `apps/api/migrations/0001_init.sql`; that schema corresponds to Alembic revision `0001_baseline`. Application startup does not run migrations.
 
 - **Existing databases with business tables**: verify the environment, volume, backup and restore procedure; compare tables, columns, constraints, foreign keys, defaults and indexes to the baseline. With approval, run:
 

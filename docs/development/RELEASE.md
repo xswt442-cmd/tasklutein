@@ -18,9 +18,9 @@
    ```sh
    npm ci
    npm run check
-   python -m pip install -r backend/requirements-dev.txt
+   python -m pip install -r apps/api/requirements-dev.txt
    python -m pytest -q
-   ruff check backend/app backend/tests
+   ruff check apps/api/app apps/api/tests
    docker compose -f deploy/compose.yml --env-file deploy/.env.preview.example config --quiet
    ```
 
