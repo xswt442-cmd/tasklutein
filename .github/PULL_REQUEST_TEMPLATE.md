@@ -2,25 +2,35 @@
 
 ### 变更
 
-<!-- 只写本次最终存在的功能、修复或工程改动；不记录撤销的方案、调试过程。填写后删除注释。 -->
+<!-- 用 1–2 句话概括本次最终完成的变更。不写开发过程。 -->
+
+### 任务
+
+<!-- 只列本 PR 真正完成的工作，使用 - [x] 勾选项；每条说明具体成果或范围。不要预填虚假的已完成项目。 -->
+<!-- 示例格式：- [x] 修复任务筛选 — 分页结果与筛选条件一致 -->
 
 ### 验证
 
-<!-- 用编号列出实际执行且通过的验证，例如「1. 验证任务筛选结果正确。」；与英文描述同一组结果。 -->
+<!-- 简短写实际运行且通过的测试或验证命令及结果，不重复整份任务列表。 -->
 
 ## English
 
 ### Changes
 
-<!-- Describe only the final changes in this PR; omit abandoned approaches and debugging history. Remove this comment when filled. -->
+<!-- Summarize the final changes in one or two sentences. Omit implementation history. -->
+
+### Tasks
+
+<!-- Include only genuinely completed items using - [x], in the same order as the Chinese list. Never pre-check unverified work. -->
+<!-- Example format: - [x] Fixed task filtering — paginated results respect active filters -->
 
 ### Verification
 
-<!-- Number the checks actually performed and passed; describe the same results as in Chinese. -->
+<!-- List actual passing checks and results concisely, mirroring the Chinese section. -->
 
-<!-- 统一要求 / Rules:
-不写合并后计划、仍需事项、待验证/待验收或未勾选任务。
-No post-merge plans, remaining-work lists, pending validation, or unchecked tasks.
-必要检查失败或尚未完成时，不虚报通过；按项目 CI 与 Review 门禁处理。
-Do not claim unrun or failed checks passed; rely on CI and review gates.
+<!-- Rules / 规则:
+- 中英两组事实、任务顺序、勾选状态保持一致。Keep the Chinese and English sections aligned.
+- 不写合并后、待办、未验证或下一阶段任务；未来需求交给 Issue。Do not add post-merge plans, pending tasks, or speculative work.
+- 不强制 Evidence / Merge Danger / 图示；仅在影响理解时使用。No mandatory diagrams, evidence blocks, or merge-risk taxonomy.
+- 未执行的检查不得标记通过；必要检查失败时由 CI 和 Review 门禁处理。Never claim unrun checks passed.
 -->
