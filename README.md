@@ -6,10 +6,10 @@
   <p>
     <a href="https://tasklutein.xswt.fyi">打开 Tasklutein</a> ·
     <a href="README.en.md">English</a> ·
-    <a href="CHANGELOG.md">更新日志</a> ·
     <a href="LICENSE">MIT License</a>
   </p>
 </div>
+
 
 ## 功能
 
