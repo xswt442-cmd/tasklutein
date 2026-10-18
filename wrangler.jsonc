@@ -4,8 +4,8 @@
   "main": "./apps/edge/src/index.ts",
   "upload_source_maps": true,
   "compatibility_date": "2026-10-14",
-  // Production ORIGIN_URL is managed in Cloudflare; never erase Dashboard vars on deploy.
-  // WEB_HOST, MCP_HOST, ACCESS_TEAM_DOMAIN, and ACCESS_AUD are configured per environment in Cloudflare.
+  // Production bindings remain Dashboard-managed; keep_vars preserves them on production deploys.
+  // Preview hosts and Access validation values stay separate from Production below.
   "keep_vars": true,
   "assets": {
     "directory": "./apps/web/dist",
@@ -15,7 +15,11 @@
   },
   "previews": {
     "vars": {
-      "ORIGIN_URL": "https://preview-origin-tasklutein.xswt.fyi"
+      "ORIGIN_URL": "https://preview-origin-tasklutein.xswt.fyi",
+      "WEB_HOST": "dev.preview.tasklutein.xswt.fyi",
+      "MCP_HOST": "mcp.preview.tasklutein.xswt.fyi",
+      "ACCESS_TEAM_DOMAIN": "black-credit-e420.cloudflareaccess.com",
+      "ACCESS_AUD": "ded870d0b45493adf15d058b50f77ac3f83a0e37b3c752ad2bb2eae77247413b"
     }
   },
   "observability": { "enabled": true }

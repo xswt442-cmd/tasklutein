@@ -8,7 +8,7 @@
 
 Production 和 Preview 使用独立的 Worker 配置、Tunnel、Compose 项目、网络、数据库卷和网关密钥。服务容器的宿主端口限制为 `127.0.0.1` 或 Docker 网络，不把数据库开放到公网。正式站点为 [Tasklutein](https://tasklutein.xswt.fyi)。
 
-为 Web hostname 创建 Cloudflare Access 自托管应用，启用 One-time PIN 登录，并使用仅允许受邀邮箱的 Allow 策略。为两个 hostname 配置 Worker 路由，并按环境设置非密钥变量 `WEB_HOST`、`MCP_HOST`、`ACCESS_TEAM_DOMAIN`、`ACCESS_AUD` 和 `ORIGIN_URL`。将 `ORIGIN_GATEWAY_TOKEN` 保存为 Worker Secret；API 与 MCP 的 `EDGE_GATEWAY_TOKEN` 使用相同值。`WEB_ORIGINS` 设置为 Web 完整 Origin。MCP hostname 不加入浏览器 Access 应用：Worker 仅在该主机的精确 `/mcp` 路径接受个人 Agent 密钥，其余路径全部拒绝。向远程客户端开放前，为 MCP hostname 的 `/mcp` 路径配置 Cloudflare 速率限制规则。
+为 Web hostname 创建 Cloudflare Access 自托管应用，启用 One-time PIN 登录，并使用仅允许受邀邮箱的 Allow 策略。为两个 hostname 配置 Worker 路由。Production 的 `WEB_HOST`、`MCP_HOST`、`ACCESS_TEAM_DOMAIN`、`ACCESS_AUD` 和 `ORIGIN_URL` 由 Cloudflare 管理；`wrangler.jsonc` 的 `previews.vars` 为分支 Preview 提供隔离值，Preview 网关 Secret `ORIGIN_GATEWAY_TOKEN` 保存在 Previews Base。API 与 MCP 的 `EDGE_GATEWAY_TOKEN` 使用相同值。`WEB_ORIGINS` 设置为 Web 完整 Origin。MCP hostname 不加入浏览器 Access 应用：Worker 仅在该主机的精确 `/mcp` 路径接受个人 Agent 密钥，其余路径全部拒绝。向远程客户端开放前，为 MCP hostname 的 `/mcp` 路径配置 Cloudflare 速率限制规则。
 
 不要将网关密钥或 Agent 密钥写入 Git、前端 `VITE_*` 变量或日志。每个用户在设置中创建自己的 Agent 密钥，MCP 服务不使用共享 Agent 凭据。
 
@@ -27,7 +27,7 @@ docker compose -f deploy/compose.yml --env-file deploy/.env.preview.example conf
 
 `npm run build:worker` 是 Wrangler dry-run；`docker compose config --quiet` 仅验证 Compose 配置。二者不会检查运行中的生产服务。
 
-`npm run smoke:preview` 检查匿名 Web/MCP 入口和未授权源站拒绝；将 `TASKLUTEIN_PREVIEW_MCP_URL` 设置为专用 Preview MCP hostname。若要检查已认证的 Web 健康状态，也需通过进程环境提供当前 `TASKLUTEIN_PREVIEW_ACCESS_COOKIE`。取得 Preview 当次授权并通过 One-time PIN 登录后，`npm run e2e:preview` 使用 `TASKLUTEIN_PREVIEW_ACCESS_COOKIE`、`TASKLUTEIN_PREVIEW_MCP_URL` 以及从设置创建的个人密钥 `TASKLUTEIN_PREVIEW_AGENT_KEY`。脚本创建唯一标记任务，通过 REST/MCP 写入 user/Agent 汇报，读取后删除任务。上述值不得写入文件或日志。脚本固定指向 Preview，不得提供 Production 凭据。失败时应先按脚本提示检查测试记录清理情况。
+`npx wrangler preview --name dev` 更新 Web Preview，`npx wrangler preview --name mcp` 更新其专用 MCP Preview；两者使用 `wrangler.jsonc` 中隔离的 `previews.vars`，不要对这些 hostname 运行 Production `wrangler deploy`。`npm run smoke:preview` 检查匿名 Web/MCP 入口和未授权源站拒绝；将 `TASKLUTEIN_PREVIEW_MCP_URL` 设置为专用 MCP Preview hostname。若要检查已认证的 Web 健康状态，也需通过进程环境提供当前 `TASKLUTEIN_PREVIEW_ACCESS_COOKIE`。取得 Preview 当次授权并通过 One-time PIN 登录后，`npm run e2e:preview` 使用 `TASKLUTEIN_PREVIEW_ACCESS_COOKIE`、`TASKLUTEIN_PREVIEW_MCP_URL` 以及从设置创建的个人密钥 `TASKLUTEIN_PREVIEW_AGENT_KEY`。脚本创建唯一标记任务，通过 REST/MCP 写入 user/Agent 汇报，读取后删除任务。上述值不得写入文件或日志。脚本固定指向 Preview，不得提供 Production 凭据。失败时应先按脚本提示检查测试记录清理情况。
 
 ## PostgreSQL 基线与迁移
 
