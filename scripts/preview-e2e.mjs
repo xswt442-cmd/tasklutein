@@ -73,7 +73,7 @@ try {
 
   stage = "list MCP tools";
   const toolNames = (await client.listTools()).tools.map((tool) => tool.name);
-  for (const required of ["add_report", "create_task", "get_task", "list_tasks", "update_task"]) {
+  for (const required of ["add_report", "create_task", "get_task", "list_reports", "list_tasks", "update_task"]) {
     if (!toolNames.includes(required)) throw new Error("required tool missing");
   }
 
@@ -87,6 +87,14 @@ try {
   stage = "call add_report";
   const agentResult = await client.callTool({ name: "add_report", arguments: { task_id: taskId, content: agentReport } });
   if (agentResult.isError) throw new Error("MCP report call failed");
+
+  stage = "read report page through MCP";
+  const reportPage = await client.callTool({ name: "list_reports", arguments: { task_id: taskId, limit: 10, offset: 0 } });
+  const reportPageText = reportPage.content.find((item) => item.type === "text")?.text;
+  if (
+    reportPage.isError || !reportPageText ||
+    !JSON.parse(reportPageText).reports.some((report) => report.source === "agent" && report.content === agentReport)
+  ) throw new Error("MCP report page mismatch");
 
   stage = "read both reports through the Web API";
   const reports = (await apiRequest(webToken, "GET", "/api/tasks/" + taskId + "/reports", undefined, 200)).reports;
@@ -121,4 +129,4 @@ try {
 }
 
 if (failed) process.exitCode = 1;
-else console.log("PASS Preview API/MCP E2E: Web CRUD/read-after-write, MCP tools/list_tasks/add_report, report sources, and tagged-task cleanup.");
+else console.log("PASS Preview API/MCP E2E: Web CRUD/read-after-write, paginated MCP task/report tools, report sources, and tagged-task cleanup.");

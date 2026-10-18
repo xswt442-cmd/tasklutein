@@ -8,14 +8,15 @@ Use `dev` for day-to-day development; `main` is the release branch. Merge featur
 
 ## TypeScript, Worker, and MCP
 
-Requires Node.js 24+ and lockfile `package-lock.json`:
+Requires Node.js 24+, Python 3.12+, and lockfile `package-lock.json`. The browser workflow test launches a local FastAPI process and uses its own file-backed SQLite database; install `backend/requirements-dev.txt` before running the complete check:
 
 ```sh
 npm ci
+python -m pip install -r backend/requirements-dev.txt
 npm run check
 ```
 
-`npm run check` runs TypeScript, Vitest, stdio MCP handshake, bilingual docs, Vite Assets build, and `wrangler deploy --dry-run`; it **does not deploy cloud resources**. `test/edge.test.ts` covers gateway headers/auth; `test/mcp-http.test.ts` uses a real MCP HTTP client for handshake. Update tests and docs alongside tool-contract changes. Commit lockfile changes with dependency updates.
+`npm run check` runs TypeScript, Vitest (including the UI against real FastAPI HTTP over isolated SQLite), stdio MCP handshake, bilingual docs, Vite Assets build, and `wrangler deploy --dry-run`; it **does not deploy cloud resources**. `test/edge.test.ts` covers gateway headers/auth; `test/mcp-http.test.ts` uses a real MCP HTTP client for tools and pagination. Update tests and docs alongside tool-contract changes. Commit lockfile changes with dependency updates.
 
 ## FastAPI and Database
 
@@ -26,7 +27,18 @@ python -m pytest -q
 ruff check backend/app backend/tests
 ```
 
-API tests use isolated SQLite; production uses PostgreSQL. Tests cover task CRUD, server-stamped report authorship, both access tokens, and gateway secret enforcement. SQLite success does not verify PostgreSQL migrations, Docker, Tunnel, HTTP MCP streaming, or a live deployment. After data exists, add versioned database migrations; never edit initial DDL expecting it to run again.
+API behavior tests use isolated SQLite; PostgreSQL migration tests create and clean tables in an explicitly named disposable `*_test` database. GitHub Actions provides a fresh PostgreSQL 17 service and requires these integration tests to run. A local Postgres test database is opt-in:
+
+```powershell
+$env:TASKLUTEIN_TEST_DATABASE_URL = 'postgresql+psycopg://tasklutein_test:<local-test-password>@127.0.0.1:5432/tasklutein_test'
+$env:TASKLUTEIN_TEST_DATABASE_NAME = 'tasklutein_test'
+$env:TASKLUTEIN_ALLOW_POSTGRES_TEST_RESET = '1'
+python -m pytest -q
+```
+
+The fixture refuses to run unless its connection names the same local `*_test` database and explicit reset permission is set. It drops the `tasks`, `reports`, and `alembic_version` tables from that database. Never point it at Production or Preview. API tests cover task CRUD, server-stamped report authorship, both access tokens, gateway-secret enforcement, filtering, pagination, and overview totals. PostgreSQL tests verify Alembic upgrades, preservation of an existing `0001_init.sql` schema and records when stamped, over-limit listing, and API writes on PostgreSQL. SQLite success does not verify Docker, Tunnel, or a live deployment.
+
+Alembic baseline: a blank PostgreSQL database runs `alembic upgrade head`. A database created by the existing `migrations/0001_init.sql` must be inspected and compared with `0001_baseline` before an operator runs `alembic stamp 0001_baseline`. Do not stamp an unverified database or run migrations automatically at application startup.
 
 ## Documentation and Security
 

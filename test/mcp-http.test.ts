@@ -31,8 +31,17 @@ async function serve(apiBase = "http://127.0.0.1:1") {
 describe("Tencent Streamable HTTP MCP", () => {
   it("requires the Worker secret and the agent token", async () => {
     const url = await serve();
+    const health = await fetch(url.replace("/mcp", "/health"));
+    const healthBody = await health.json() as { request_id?: string };
+    expect(health.headers.get("X-Request-ID")).toMatch(/^[0-9a-f-]{36}$/);
+    expect(healthBody.request_id).toBe(health.headers.get("X-Request-ID"));
+
     const body = JSON.stringify({ jsonrpc: "2.0", method: "initialize", id: 1, params: {} });
-    expect((await fetch(url, { method: "POST", body })).status).toBe(403);
+    const rejectedGateway = await fetch(url, { method: "POST", body });
+    const rejectedBody = await rejectedGateway.json() as { code?: string; request_id?: string };
+    expect(rejectedGateway.status).toBe(403);
+    expect(rejectedBody.code).toBe("invalid_gateway");
+    expect(rejectedBody.request_id).toBe(rejectedGateway.headers.get("X-Request-ID"));
     expect((await fetch(url, { method: "POST", body,
       headers: { "X-Tasklutein-Gateway": gatewayToken }
     })).status).toBe(401);
@@ -82,9 +91,23 @@ describe("Tencent Streamable HTTP MCP", () => {
     const backend = createServer((req, res) => {
       expect(req.headers.authorization).toBe("Bearer " + agentToken);
       expect(req.headers["x-tasklutein-gateway"]).toBe(gatewayToken);
-      expect(req.url).toBe("/api/tasks?status=done");
+      expect(req.headers["x-request-id"]).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+      expect([
+        "/api/tasks?status=done",
+        "/api/tasks?status=done&q=release+notes&sort=created_desc&limit=25&offset=50",
+        "/api/tasks/00000000-0000-4000-8000-000000000001/reports?limit=1&offset=0",
+      ]).toContain(req.url);
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ tasks: [{ id: "saved-task", status: "done" }] }));
+      if (req.url !== "/api/tasks/00000000-0000-4000-8000-000000000001/reports?limit=1&offset=0") {
+        res.end(JSON.stringify({ tasks: [{ id: "saved-task", status: "done" }], total: 1, limit: 200, offset: 0 }));
+      } else {
+        res.end(JSON.stringify({
+          reports: [{ id: "saved-report", content: "Saved through FastAPI", source: "agent" }],
+          total: 2,
+          limit: 1,
+          offset: 0,
+        }));
+      }
     });
     live.push(backend);
     await new Promise<void>((resolve) => backend.listen(0, "127.0.0.1", resolve));
@@ -112,12 +135,38 @@ describe("Tencent Streamable HTTP MCP", () => {
       expect(JSON.parse(textBlocks[0].text)).toMatchObject({
         tasks: [{ id: "saved-task", status: "done" }]
       });
+
+      const filtered = await client.callTool({
+        name: "list_tasks",
+        arguments: { status: "done", q: "release notes", sort: "created_desc", limit: 25, offset: 50 },
+      });
+      const filteredContents: unknown = filtered.content;
+      if (!Array.isArray(filteredContents)) throw new Error("MCP result content is not an array");
+      expect(JSON.stringify(filteredContents)).toContain("saved-task");
+
+      const reportResult = await client.callTool({
+        name: "list_reports",
+        arguments: { task_id: "00000000-0000-4000-8000-000000000001", limit: 1, offset: 0 },
+      });
+      const reportContents: unknown = reportResult.content;
+      if (!Array.isArray(reportContents)) throw new Error("MCP result content is not an array");
+      const reportTextBlocks = reportContents.filter((part: unknown): part is { type: "text"; text: string } =>
+        typeof part === "object" && part !== null &&
+        "type" in part && part.type === "text" &&
+        "text" in part && typeof part.text === "string");
+      expect(reportTextBlocks).toHaveLength(1);
+      expect(JSON.parse(reportTextBlocks[0].text)).toMatchObject({
+        reports: [{ id: "saved-report", source: "agent" }],
+        total: 2,
+        limit: 1,
+        offset: 0,
+      });
     } finally {
       await client.close();
     }
   });
 
-  it("speaks real MCP Streamable HTTP and exposes the 5 tools", async () => {
+  it("speaks real MCP Streamable HTTP and exposes the 6 tools", async () => {
     const url = await serve();
     const client = new Client({ name: "remote-mcp-test", version: "0.1.0" });
     const transport = new StreamableHTTPClientTransport(new URL(url), {
@@ -131,7 +180,7 @@ describe("Tencent Streamable HTTP MCP", () => {
     try {
       await client.connect(transport);
       const actual = (await client.listTools()).tools.map((tool) => tool.name).sort();
-      expect(actual).toEqual(["add_report", "create_task", "get_task", "list_tasks", "update_task"]);
+      expect(actual).toEqual(["add_report", "create_task", "get_task", "list_reports", "list_tasks", "update_task"]);
     } finally {
       await client.close();
     }

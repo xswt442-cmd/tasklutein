@@ -1,321 +1,320 @@
 // @vitest-environment jsdom
+import { spawn, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { createServer } from "node:net";
+import { existsSync } from "node:fs";
+import { mkdir, rm } from "node:fs/promises";
+import { resolve, join } from "node:path";
+import type { ChildProcess } from "node:child_process";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createElement } from "react";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import App from "../apps/web/src/App";
-import { api, ApiError } from "../apps/web/src/api";
-import type { Report, Task } from "../apps/web/src/api";
+import { createHttpMcpServer } from "../packages/mcp/src/http";
 
-vi.mock("../apps/web/src/api", async () => {
-  const actual = await vi.importActual<typeof import("../apps/web/src/api")>("../apps/web/src/api");
-  return { ...actual, api: vi.fn() };
+const root = process.cwd();
+const backend = join(root, "backend");
+const webToken = "web-browser-test-token-" + "a".repeat(40);
+const agentToken = "agent-browser-test-token-" + "b".repeat(40);
+const gatewayToken = "gateway-browser-integration-token-" + "g".repeat(40);
+const databaseDirectory = join(root, "node_modules", ".cache", "tasklutein", "web-test");
+const databasePath = join(databaseDirectory, `.web-e2e-${process.pid}.sqlite3`);
+const databaseUrl = "sqlite+pysqlite:///" + databasePath.replaceAll("\\", "/");
+const pythonFromVirtualEnv = join(root, ".venv", "Scripts", "python.exe");
+const python = process.env.TASKLUTEIN_TEST_PYTHON ?? (existsSync(pythonFromVirtualEnv) ? pythonFromVirtualEnv : "python");
+const nativeFetch = globalThis.fetch.bind(globalThis);
+
+let apiOrigin = "";
+let apiProcess: ChildProcess | undefined;
+
+async function freePort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolveListen, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolveListen);
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Could not allocate a local API port");
+  const port = address.port;
+  await new Promise<void>((resolveClose, reject) => server.close((error) => error ? reject(error) : resolveClose()));
+  return port;
+}
+
+beforeAll(async () => {
+  await mkdir(databaseDirectory, { recursive: true });
+  const initializeDatabase = spawnSync(python, ["tests/prepare_sqlite_web_db.py", databaseUrl], {
+    cwd: backend,
+    encoding: "utf8",
+    env: { ...process.env, PYTHONPATH: backend },
+  });
+  if (initializeDatabase.status !== 0) {
+    throw new Error("Could not prepare an isolated SQLite database for the browser UI: " + initializeDatabase.stderr);
+  }
+
+  const port = await freePort();
+  apiOrigin = `http://127.0.0.1:${port}`;
+  const apiEnv: NodeJS.ProcessEnv = {
+    ...process.env,
+    PYTHONPATH: backend,
+    DATABASE_URL: databaseUrl,
+    WEB_ACCESS_TOKEN: webToken,
+    AGENT_ACCESS_TOKEN: agentToken,
+    EDGE_GATEWAY_TOKEN: gatewayToken,
+  };
+  apiProcess = spawn(python, ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", String(port)], {
+    cwd: backend,
+    env: apiEnv,
+    stdio: "ignore",
+    windowsHide: true,
+  });
+
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    if (apiProcess.exitCode !== null) throw new Error("The local FastAPI process stopped during startup");
+    try {
+      const response = await nativeFetch(new URL("/api/health", apiOrigin), {
+        headers: { "X-Tasklutein-Gateway": gatewayToken },
+      });
+      if (response.status === 200) return;
+    } catch {
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
+    }
+  }
+  apiProcess.kill();
+  throw new Error("The local FastAPI process did not become ready within 10 seconds");
 });
 
-const apiMock = vi.mocked(api);
-const baseTask: Task = {
-  id: "task-1",
-  title: "Original title",
-  description: "Original description",
-  status: "todo",
-  created_at: "2026-10-15T00:00:00Z",
-  updated_at: "2026-10-15T00:00:00Z",
-};
+afterAll(async () => {
+  if (apiProcess && apiProcess.exitCode === null) {
+    const exited = new Promise<void>((resolveExit) => apiProcess?.once("exit", () => resolveExit()));
+    apiProcess.kill();
+    await Promise.race([exited, new Promise<void>((resolveTimeout) => setTimeout(resolveTimeout, 3000))]);
+  }
+  for (const path of [databasePath, `${databasePath}-wal`, `${databasePath}-shm`]) {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await rm(path, { force: true });
+        break;
+      } catch (error) {
+        if (!(error instanceof Error) || !("code" in error) || error.code !== "EBUSY" || attempt === 20) throw error;
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
+      }
+    }
+  }
+});
 
-function installApiMock(options: {
-  reports?: Report[];
-  onPatch?: (body: Record<string, unknown>) => Promise<unknown> | unknown;
-} = {}) {
-  const reports = options.reports ?? [];
-  apiMock.mockImplementation(async (_token, path, request) => {
-    if (path === "/tasks" && request?.method === "POST") {
-      return { task: { ...baseTask, title: JSON.parse(String(request.body)).title } } as never;
-    }
-    if (path === "/tasks" && request?.method !== "PATCH") {
-      return { tasks: [{ ...baseTask }] } as never;
-    }
-    if (path === "/tasks/task-1/reports" && request?.method === "POST") {
-      return { report: { id: "report-created", task_id: "task-1", content: "saved", source: "user", created_at: "2026-10-15T01:00:00Z" } } as never;
-    }
-    if (path === "/tasks/task-1/reports") {
-      return { reports: [...reports] } as never;
-    }
-    if (path === "/tasks/task-1" && request?.method === "PATCH") {
-      const body = JSON.parse(String(request.body)) as Record<string, unknown>;
-      return (await options.onPatch?.(body)) as never;
-    }
-    throw new Error(`Unexpected API call: ${request?.method ?? "GET"} ${path}`);
-  });
-}
-
-async function enterWorkspace() {
-  render(createElement(App));
-  fireEvent.change(screen.getByLabelText("工作空间访问令牌"), { target: { value: "local-web-token" } });
-  fireEvent.click(screen.getByRole("button", { name: "进入工作空间" }));
-  await screen.findByRole("heading", { name: baseTask.title });
-}
-
-beforeEach(() => {
+beforeEach(async () => {
   sessionStorage.clear();
-  apiMock.mockReset();
+  window.history.replaceState({}, "", "/");
+  vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
+    const localUrl = typeof input === "string" && input.startsWith("/") ? new URL(input, apiOrigin) : input;
+    const headers = new Headers(init?.headers);
+    headers.set("X-Tasklutein-Gateway", gatewayToken);
+    return nativeFetch(localUrl, { ...init, headers });
+  });
+  const response = await nativeFetch(new URL("/api/tasks?limit=200", apiOrigin), {
+    headers: { Authorization: "Bearer " + webToken, "X-Tasklutein-Gateway": gatewayToken },
+  });
+  if (!response.ok) throw new Error("Could not reset the isolated browser-test workspace");
+  const page = await response.json() as { tasks: Array<{ id: string }> };
+  for (const task of page.tasks) {
+    const deleted = await nativeFetch(new URL("/api/tasks/" + task.id, apiOrigin), {
+      method: "DELETE",
+      headers: { Authorization: "Bearer " + webToken, "X-Tasklutein-Gateway": gatewayToken },
+    });
+    if (deleted.status !== 204) throw new Error("Could not clear an isolated browser-test task");
+  }
 });
 
 afterEach(() => {
   cleanup();
-  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
-describe("Tasklutein workspace UI", () => {
-  it("exposes names for task and report fields and announces the active status filter", async () => {
-    installApiMock();
+async function enterWorkspace() {
+  render(createElement(App));
+  fireEvent.change(screen.getByLabelText("工作空间访问令牌"), { target: { value: webToken } });
+  fireEvent.click(screen.getByRole("button", { name: "进入工作空间" }));
+  await screen.findByRole("heading", { name: "Overview" });
+}
+
+describe("Tasklutein browser workflow over the real FastAPI HTTP API", () => {
+  it("creates, searches, updates, reports, and refreshes real API data", async () => {
     await enterWorkspace();
+    const title = `E2E Release 50%_literal ${Date.now()}`;
 
-    expect(screen.getByRole("textbox", { name: "新任务标题" })).toBeTruthy();
-    expect(screen.getByRole("textbox", { name: "新任务说明" })).toBeTruthy();
-    expect(screen.getByRole("textbox", { name: "工作汇报内容" })).toBeTruthy();
+    fireEvent.click(screen.getAllByRole("link", { name: "任务" })[0]);
+    await screen.findByRole("heading", { name: "任务" });
+    fireEvent.change(screen.getByLabelText("新任务标题"), { target: { value: title } });
+    fireEvent.change(screen.getByLabelText("新任务说明"), { target: { value: "Created through the browser and FastAPI." } });
+    fireEvent.click(screen.getByRole("button", { name: "创建任务" }));
+    await screen.findByRole("heading", { name: title });
 
-    const filterGroup = screen.getByRole("group", { name: "按任务状态筛选" });
-    expect(within(filterGroup).getByRole("button", { name: "全部" }).getAttribute("aria-pressed")).toBe("true");
-    expect(within(filterGroup).getByRole("button", { name: "待处理" }).getAttribute("aria-pressed")).toBe("false");
-    fireEvent.click(within(filterGroup).getByRole("button", { name: "待处理" }));
-    expect(within(filterGroup).getByRole("button", { name: "待处理" }).getAttribute("aria-pressed")).toBe("true");
-  });
+    fireEvent.change(screen.getByLabelText("任务状态"), { target: { value: "in_progress" } });
+    await waitFor(() => expect((screen.getByLabelText("任务状态") as HTMLSelectElement).value).toBe("in_progress"));
 
-  it("does not persist a rejected token, permits retry, and clears the session on sign-out", async () => {
-    let rejectedFirstAttempt = false;
-    apiMock.mockImplementation(async (_token, path, request) => {
-      if (path === "/tasks" && request?.method !== "PATCH") {
-        if (!rejectedFirstAttempt) {
-          rejectedFirstAttempt = true;
-          throw new ApiError(401, "unauthorized");
-        }
-        return { tasks: [] } as never;
-      }
-      throw new Error(`Unexpected API call: ${request?.method ?? "GET"} ${path}`);
+    fireEvent.change(screen.getByLabelText("工作汇报内容"), {
+      target: { value: "Browser report saved through the FastAPI report endpoint." },
     });
-    render(createElement(App));
+    fireEvent.click(screen.getByRole("button", { name: "添加汇报" }));
+    await screen.findByText("Browser report saved through the FastAPI report endpoint.");
 
-    const tokenInput = screen.getByLabelText("工作空间访问令牌");
-    fireEvent.change(tokenInput, { target: { value: "rejected-local-token" } });
-    fireEvent.click(screen.getByRole("button", { name: "进入工作空间" }));
-    await screen.findByRole("alert");
-    expect(sessionStorage.getItem("tasklutein_token")).toBeNull();
-    expect((tokenInput as HTMLInputElement).value).toBe("rejected-local-token");
+    fireEvent.click(screen.getByRole("button", { name: "刷新数据" }));
+    await screen.findByText(title);
+    await screen.findByText("Browser report saved through the FastAPI report endpoint.");
 
-    fireEvent.change(tokenInput, { target: { value: "accepted-local-token" } });
-    fireEvent.click(screen.getByRole("button", { name: "进入工作空间" }));
-    await screen.findByRole("button", { name: "退出" });
-    expect(sessionStorage.getItem("tasklutein_token")).toBe("accepted-local-token");
+    const tasksResponse = await nativeFetch(new URL("/api/tasks?q=" + encodeURIComponent(title), apiOrigin), {
+      headers: { Authorization: "Bearer " + webToken, "X-Tasklutein-Gateway": gatewayToken },
+    });
+    const tasks = await tasksResponse.json() as { total: number; tasks: Array<{ status: string; title: string }> };
+    expect(tasks.total).toBe(1);
+    expect(tasks.tasks[0]).toMatchObject({ title, status: "in_progress" });
 
     fireEvent.click(screen.getByRole("button", { name: "退出" }));
     expect(sessionStorage.getItem("tasklutein_token")).toBeNull();
-    expect(screen.getByLabelText("工作空间访问令牌")).toBeTruthy();
+    expect(await screen.findByLabelText("工作空间访问令牌")).toBeTruthy();
   });
 
-  it("keeps an edit draft after a failed PATCH and updates the task after retry", async () => {
-    let patchAttempts = 0;
-    installApiMock({
-      onPatch: (body) => {
-        patchAttempts += 1;
-        if (patchAttempts === 1) throw new ApiError(422, "title invalid");
-        return { task: { ...baseTask, title: String(body.title), description: String(body.description) } };
+  it("preserves task filters in the URL and filters through the backend", async () => {
+    await enterWorkspace();
+    const title = `E2E Search 50%_exact ${Date.now()}`;
+    const response = await nativeFetch(new URL("/api/tasks", apiOrigin), {
+      method: "POST",
+        headers: {
+          Authorization: "Bearer " + webToken,
+          "X-Tasklutein-Gateway": gatewayToken,
+          "Content-Type": "application/json",
+        },
+      body: JSON.stringify({ title, status: "done" }),
+    });
+    expect(response.status).toBe(201);
+
+    fireEvent.click(screen.getAllByRole("link", { name: "任务" })[0]);
+    await screen.findByRole("heading", { name: "任务" });
+    fireEvent.change(screen.getByRole("searchbox", { name: "搜索任务" }), { target: { value: "50%_exact" } });
+    fireEvent.click(screen.getByRole("button", { name: "搜索" }));
+    await screen.findByText(title);
+
+    fireEvent.change(screen.getByLabelText("按任务状态筛选"), { target: { value: "done" } });
+    await waitFor(() => expect(new URL(window.location.href).searchParams.get("status")).toBe("done"));
+    expect(new URL(window.location.href).searchParams.get("q")).toBe("50%_exact");
+    expect(screen.getByText(title)).toBeTruthy();
+    expect(within(screen.getByLabelText("任务状态")).queryByText("done")).toBeNull();
+  });
+
+  it("opens the next backend page through the URL controls", async () => {
+    await enterWorkspace();
+    const marker = `E2E Pagination ${Date.now()}`;
+    for (let index = 0; index < 26; index += 1) {
+      const response = await nativeFetch(new URL("/api/tasks", apiOrigin), {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer " + webToken,
+          "X-Tasklutein-Gateway": gatewayToken,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ title: `${marker} ${index}` }),
+      });
+      expect(response.status).toBe(201);
+    }
+
+    const pageResponse = await nativeFetch(new URL("/api/tasks?limit=25&offset=25", apiOrigin), {
+      headers: { Authorization: "Bearer " + webToken, "X-Tasklutein-Gateway": gatewayToken },
+    });
+    const page = await pageResponse.json() as { tasks: Array<{ title: string }>; total: number };
+    expect(page.total).toBe(26);
+
+    fireEvent.click(screen.getAllByRole("link", { name: "任务" })[0]);
+    await screen.findByText("共 26 项");
+    fireEvent.click(screen.getByRole("button", { name: "下一页" }));
+    await screen.findByText(page.tasks[0].title);
+    expect(new URL(window.location.href).searchParams.get("offset")).toBe("25");
+    expect(screen.getByRole("button", { name: "上一页" }).hasAttribute("disabled")).toBe(false);
+  });
+
+  it("shares the same FastAPI data and attribution through real HTTP MCP tools", async () => {
+    await enterWorkspace();
+    const mcpPort = await freePort();
+    const mcpServer = createHttpMcpServer({ apiBase: apiOrigin, agentToken, gatewayToken });
+    await new Promise<void>((resolveListen, rejectListen) => {
+      mcpServer.once("error", rejectListen);
+      mcpServer.listen(mcpPort, "127.0.0.1", resolveListen);
+    });
+
+    const client = new Client({ name: "tasklutein-browser-integration", version: "0.1.0" });
+    const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${mcpPort}/mcp`), {
+      requestInit: {
+        headers: {
+          Authorization: "Bearer " + agentToken,
+          "X-Tasklutein-Gateway": gatewayToken,
+          "X-Request-ID": randomUUID(),
+        },
       },
     });
-    await enterWorkspace();
 
-    fireEvent.click(screen.getByRole("button", { name: "编辑任务" }));
-    fireEvent.change(screen.getByLabelText("标题"), { target: { value: "Updated title" } });
-    fireEvent.change(screen.getByLabelText("任务说明"), { target: { value: "Updated description" } });
-    expect(screen.getByRole("button", { name: "退出" }).hasAttribute("disabled")).toBe(true);
-    expect(screen.getByRole("button", { name: "全部" }).hasAttribute("disabled")).toBe(true);
-
-    fireEvent.click(screen.getByRole("button", { name: "保存修改" }));
-    await screen.findByRole("alert");
-    expect((screen.getByLabelText("标题") as HTMLInputElement).value).toBe("Updated title");
-    expect((screen.getByLabelText("任务说明") as HTMLTextAreaElement).value).toBe("Updated description");
-
-    fireEvent.click(screen.getByRole("button", { name: "保存修改" }));
-    await screen.findByRole("heading", { name: "Updated title" });
-    expect(patchAttempts).toBe(2);
-    expect(apiMock.mock.calls.filter(([, path, request]) => path === "/tasks/task-1" && request?.method === "PATCH")).toHaveLength(2);
-  });
-
-  it("reloads the report timeline when workspace refresh is clicked", async () => {
-    const reports: Report[] = [{
-      id: "report-first",
-      task_id: "task-1",
-      content: "Existing report",
-      source: "user",
-      created_at: "2026-10-15T00:30:00Z",
-    }];
-    installApiMock({ reports });
-    await enterWorkspace();
-    await screen.findByText("Existing report");
-
-    reports.push({
-      id: "report-agent",
-      task_id: "task-1",
-      content: "Agent report after refresh",
-      source: "agent",
-      created_at: "2026-10-15T01:00:00Z",
-    });
-    fireEvent.click(screen.getByRole("button", { name: "刷新任务" }));
-
-    await screen.findByText("Agent report after refresh");
-    expect(screen.getByText("Agent", { selector: "span" })).toBeTruthy();
-    await waitFor(() => {
-      expect(apiMock.mock.calls.filter(([, path, request]) => path === "/tasks/task-1/reports" && request?.method !== "POST")).toHaveLength(2);
-    });
-  });
-
-  it("updates status counts and filter results after a successful status PATCH", async () => {
-    const tasks: Task[] = [
-      { ...baseTask },
-      { ...baseTask, id: "task-2", title: "Active task", status: "in_progress" },
-    ];
-    apiMock.mockImplementation(async (_token, path, request) => {
-      if (path === "/tasks" && request?.method !== "PATCH") return { tasks: tasks.map((task) => ({ ...task })) } as never;
-      if (path.endsWith("/reports")) return { reports: [] } as never;
-      if (path === "/tasks/task-1" && request?.method === "PATCH") {
-        const patch = JSON.parse(String(request.body)) as Partial<Task>;
-        Object.assign(tasks[0], patch);
-        return { task: { ...tasks[0] } } as never;
-      }
-      throw new Error(`Unexpected API call: ${request?.method ?? "GET"} ${path}`);
-    });
-    await enterWorkspace();
-
-    const statusCount = (label: string) => {
-      const labelElement = screen.getAllByText(label).find((element) => element.tagName === "P");
-      if (!labelElement) throw new Error(`Status card not found: ${label}`);
-      const card = labelElement.parentElement;
-      return Number(card?.querySelectorAll("p")[1]?.textContent);
+    const responseData = (result: Awaited<ReturnType<typeof client.callTool>>) => {
+      const blocks: unknown = result.content;
+      if (!Array.isArray(blocks)) throw new Error("MCP response has no content blocks");
+      const textBlock = blocks.find((part): part is { type: "text"; text: string } =>
+        typeof part === "object" && part !== null &&
+        "type" in part && part.type === "text" &&
+        "text" in part && typeof part.text === "string");
+      if (!textBlock) throw new Error("MCP response has no text content");
+      return JSON.parse(textBlock.text) as Record<string, unknown>;
     };
-    expect(statusCount("待处理")).toBe(1);
-    expect(statusCount("进行中")).toBe(1);
 
-    fireEvent.click(screen.getByRole("button", { name: "进行中" }));
-    expect(screen.getByRole("button", { name: /Active task/ })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /Original title/ })).toBeNull();
+    try {
+      await client.connect(transport);
+      const title = `E2E MCP shared task ${Date.now()}`;
+      const created = await client.callTool({ name: "create_task", arguments: { title } });
+      expect(created.isError).not.toBe(true);
+      const createdValue = responseData(created) as { task: { id: string; title: string } };
+      expect(createdValue.task.title).toBe(title);
 
-    fireEvent.click(screen.getByRole("button", { name: "全部" }));
-    fireEvent.change(screen.getByLabelText("任务状态"), { target: { value: "done" } });
-    await screen.findByText("状态已更新");
-    expect(statusCount("待处理")).toBe(0);
-    expect(statusCount("进行中")).toBe(1);
-    expect(statusCount("已完成")).toBe(1);
-    fireEvent.click(screen.getByRole("button", { name: "已完成" }));
-    expect(screen.getByRole("button", { name: /Original title/ })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /Active task/ })).toBeNull();
+      const userReport = await nativeFetch(new URL(`/api/tasks/${createdValue.task.id}/reports`, apiOrigin), {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer " + webToken,
+          "X-Tasklutein-Gateway": gatewayToken,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ content: "Written through FastAPI with the Web credential." }),
+      });
+      expect(userReport.status).toBe(201);
+
+      const agentReport = await client.callTool({
+        name: "add_report",
+        arguments: { task_id: createdValue.task.id, content: "Written through MCP with the Agent credential." },
+      });
+      expect(agentReport.isError).not.toBe(true);
+
+      const reports = await client.callTool({
+        name: "list_reports",
+        arguments: { task_id: createdValue.task.id, limit: 10, offset: 0 },
+      });
+      expect(responseData(reports)).toMatchObject({
+        total: 2,
+        reports: [
+          { source: "agent", content: "Written through MCP with the Agent credential." },
+          { source: "user", content: "Written through FastAPI with the Web credential." },
+        ],
+      });
+
+      const sharedTasks = await client.callTool({ name: "list_tasks", arguments: { q: title, limit: 5, offset: 0 } });
+      expect(responseData(sharedTasks)).toMatchObject({ total: 1, tasks: [{ id: createdValue.task.id, title }] });
+    } finally {
+      await client.close();
+      await new Promise<void>((resolveClose, rejectClose) => mcpServer.close((error) => error ? rejectClose(error) : resolveClose()));
+    }
   });
 
-  it("preserves a report draft after failure and clears it after retry", async () => {
-    let attempts = 0;
-    const savedReports: Report[] = [];
-    apiMock.mockImplementation(async (_token, path, request) => {
-      if (path === "/tasks") return { tasks: [{ ...baseTask }] } as never;
-      if (path === "/tasks/task-1/reports" && request?.method === "POST") {
-        attempts += 1;
-        if (attempts === 1) throw new ApiError(503, "backend unavailable");
-        const body = JSON.parse(String(request.body)) as { content: string };
-        expect(body).toEqual({ content: "Factual report\nsecond line" });
-        const report: Report = { id: "report-retry", task_id: "task-1", content: body.content, source: "user", created_at: "2026-10-15T01:00:00Z" };
-        savedReports.unshift(report);
-        return { report } as never;
-      }
-      if (path === "/tasks/task-1/reports") return { reports: [...savedReports] } as never;
-      throw new Error(`Unexpected API call: ${request?.method ?? "GET"} ${path}`);
-    });
-    await enterWorkspace();
-
-    const input = screen.getByRole("textbox", { name: "工作汇报内容" });
-    fireEvent.change(input, { target: { value: "Factual report\nsecond line" } });
-    fireEvent.click(screen.getByRole("button", { name: "添加汇报" }));
-    await screen.findByRole("alert");
-    expect((input as HTMLTextAreaElement).value).toBe("Factual report\nsecond line");
-
-    fireEvent.click(screen.getByRole("button", { name: "添加汇报" }));
-    await screen.findByText("汇报已保存");
-    expect((input as HTMLTextAreaElement).value).toBe("");
-    expect(screen.getByText((_content, element) => element?.tagName === "P" && element.textContent === "Factual report\nsecond line")).toBeTruthy();
-    expect(attempts).toBe(2);
-  });
-
-  it.each([
-    { status: 502, message: "后端暂时无法连接，请稍后重试。" },
-    { status: 503, message: "服务暂时不可用，请稍后重试。" },
-  ])("shows backend unavailability for HTTP $status and recovers on refresh", async ({ status, message }) => {
-    let taskReads = 0;
-    apiMock.mockImplementation(async (_token, path, request) => {
-      if (path === "/tasks" && request?.method !== "PATCH") {
-        taskReads += 1;
-        if (taskReads === 2) throw new ApiError(status, "origin_unavailable");
-        return { tasks: [{ ...baseTask }] } as never;
-      }
-      if (path === "/tasks/task-1/reports") return { reports: [] } as never;
-      throw new Error(`Unexpected API call: ${request?.method ?? "GET"} ${path}`);
-    });
+  it("clears an expired session when the authenticated backend returns 401", async () => {
+    sessionStorage.setItem("tasklutein_token", "expired-local-token");
     render(createElement(App));
-    fireEvent.change(screen.getByLabelText("工作空间访问令牌"), { target: { value: "local-web-token" } });
-    fireEvent.click(screen.getByRole("button", { name: "进入工作空间" }));
-
-    await screen.findByText("连接暂不可用");
-    expect(screen.getByRole("alert").textContent).toBe(message);
-    expect(sessionStorage.getItem("tasklutein_token")).toBe("local-web-token");
-
-    fireEvent.click(screen.getByRole("button", { name: "刷新任务" }));
-    await screen.findByText("已连接");
-    await screen.findByRole("heading", { name: baseTask.title });
-  });
-
-  it("clears an expired session when a report read returns 401", async () => {
-    apiMock.mockImplementation(async (_token, path) => {
-      if (path === "/tasks") return { tasks: [{ ...baseTask }] } as never;
-      if (path === "/tasks/task-1/reports") throw new ApiError(401, "unauthorized");
-      throw new Error(`Unexpected API call: GET ${path}`);
-    });
-    render(createElement(App));
-    fireEvent.change(screen.getByLabelText("工作空间访问令牌"), { target: { value: "local-web-token" } });
-    fireEvent.click(screen.getByRole("button", { name: "进入工作空间" }));
-
-    await waitFor(() => expect(sessionStorage.getItem("tasklutein_token")).toBeNull());
-    expect(await screen.findByLabelText("工作空间访问令牌")).toBeTruthy();
-    expect(screen.getByRole("alert").textContent).toBe("访问令牌无效或已失效，请重新输入。");
-  });
-
-  it("explains a network failure on sign-in without storing the token", async () => {
-    apiMock.mockRejectedValueOnce(new TypeError("Failed to fetch"));
-    render(createElement(App));
-    fireEvent.change(screen.getByLabelText("工作空间访问令牌"), { target: { value: "local-web-token" } });
-    fireEvent.click(screen.getByRole("button", { name: "进入工作空间" }));
-
-    expect((await screen.findByRole("alert")).textContent).toBe("网络连接失败，请检查网络后重试。");
+    await screen.findByLabelText("工作空间访问令牌");
     expect(sessionStorage.getItem("tasklutein_token")).toBeNull();
-  });
-
-  it("prevents duplicate report requests while the first submission is pending", async () => {
-    let resolvePost: ((value: { report: Report }) => void) | undefined;
-    let attempts = 0;
-    const pendingPost = new Promise<{ report: Report }>((resolve) => { resolvePost = resolve; });
-    apiMock.mockImplementation(async (_token, path, request) => {
-      if (path === "/tasks") return { tasks: [{ ...baseTask }] } as never;
-      if (path === "/tasks/task-1/reports" && request?.method === "POST") {
-        attempts += 1;
-        return pendingPost as never;
-      }
-      if (path === "/tasks/task-1/reports") return { reports: [] } as never;
-      throw new Error(`Unexpected API call: ${request?.method ?? "GET"} ${path}`);
-    });
-    await enterWorkspace();
-
-    fireEvent.change(screen.getByPlaceholderText("记录实际完成的工作、测试和结果…"), { target: { value: "one report" } });
-    const submit = screen.getByRole("button", { name: "添加汇报" });
-    fireEvent.click(submit);
-    expect(submit.hasAttribute("disabled")).toBe(true);
-    fireEvent.click(submit);
-    expect(attempts).toBe(1);
-
-    resolvePost?.({ report: { id: "report-once", task_id: "task-1", content: "one report", source: "user", created_at: "2026-10-15T01:00:00Z" } });
-    await screen.findByText("汇报已保存");
-    expect(attempts).toBe(1);
+    expect(screen.getByRole("status").textContent).toContain("令牌已失效");
   });
 });

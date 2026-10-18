@@ -12,10 +12,19 @@ export type EdgeEnv = {
 };
 
 const GATEWAY_HEADER = "X-Tasklutein-Gateway";
+const MAX_REST_REQUEST_BYTES = 64 * 1024;
+const MAX_MCP_REQUEST_BYTES = 1024 * 1024;
 const ALLOWED_HEADERS = new Set([
   "authorization", "content-type", "accept", "accept-language",
-  "mcp-protocol-version", "mcp-session-id", "last-event-id", "origin",
+  "mcp-protocol-version", "mcp-session-id", "last-event-id", "origin", "x-request-id",
 ]);
+
+function gatewayError(detail: string, status: number, requestId: string): Response {
+  return Response.json(
+    { detail, code: detail, request_id: requestId },
+    { status, headers: { "Cache-Control": "no-store", "X-Request-ID": requestId } },
+  );
+}
 
 function isGatewayPath(pathname: string): boolean {
   return pathname === "/api" || pathname.startsWith("/api/") ||
@@ -44,24 +53,35 @@ export async function proxyGateway(
   fetchOrigin: (request: Request, init?: RequestInit) => Promise<Response> = fetch,
 ): Promise<Response> {
   const incoming = new URL(request.url);
+  const requestId = crypto.randomUUID();
   if (incoming.protocol === "http:" && !isLocalHostname(incoming.hostname)) {
     incoming.protocol = "https:";
-    return Response.redirect(incoming, 308);
+    return new Response(null, {
+      status: 308,
+      headers: { Location: incoming.toString(), "X-Request-ID": requestId },
+    });
   }
   if (!isGatewayPath(incoming.pathname)) return env.ASSETS.fetch(request);
 
   if (incoming.pathname !== "/api/health" &&
       !/^Bearer \S+$/.test(request.headers.get("Authorization") ?? "")) {
-    return Response.json({ detail: "unauthorized" }, { status: 401, headers: { "Cache-Control": "no-store" } });
+    return gatewayError("unauthorized", 401, requestId);
+  }
+  const contentLength = Number(request.headers.get("Content-Length"));
+  const maxRequestBytes = incoming.pathname === "/mcp" || incoming.pathname.startsWith("/mcp/")
+    ? MAX_MCP_REQUEST_BYTES
+    : MAX_REST_REQUEST_BYTES;
+  if (Number.isFinite(contentLength) && contentLength > maxRequestBytes) {
+    return gatewayError("request_too_large", 413, requestId);
   }
   if (!env.ORIGIN_URL || !env.ORIGIN_GATEWAY_TOKEN || env.ORIGIN_GATEWAY_TOKEN.length < 32 ||
       env.ORIGIN_GATEWAY_TOKEN.startsWith("REPLACE_WITH")) {
-    return Response.json({ detail: "gateway_not_configured" }, { status: 503, headers: { "Cache-Control": "no-store" } });
+    return gatewayError("gateway_not_configured", 503, requestId);
   }
 
   const origin = isAllowedOrigin(env.ORIGIN_URL);
   if (!origin) {
-    return Response.json({ detail: "invalid_origin_configuration" }, { status: 503, headers: { "Cache-Control": "no-store" } });
+    return gatewayError("invalid_origin_configuration", 503, requestId);
   }
 
   // Copy the body/stream without materializing it. A strict header allowlist
@@ -72,12 +92,13 @@ export async function proxyGateway(
     if (!ALLOWED_HEADERS.has(name.toLowerCase())) upstreamRequest.headers.delete(name);
   }
   upstreamRequest.headers.set(GATEWAY_HEADER, env.ORIGIN_GATEWAY_TOKEN);
+  upstreamRequest.headers.set("X-Request-ID", requestId);
 
   try {
     const upstream = await fetchOrigin(upstreamRequest, { redirect: "manual" });
     // Never follow redirects with origin credentials attached.
     if (upstream.status >= 300 && upstream.status < 400) {
-      return Response.json({ detail: "origin_redirect_rejected" }, { status: 502, headers: { "Cache-Control": "no-store" } });
+      return gatewayError("origin_redirect_rejected", 502, requestId);
     }
     const headers = new Headers(upstream.headers);
     headers.delete("set-cookie");
@@ -87,9 +108,10 @@ export async function proxyGateway(
     headers.delete("access-control-allow-credentials");
     headers.set("Cache-Control", "no-store");
     headers.set("X-Content-Type-Options", "nosniff");
+    headers.set("X-Request-ID", requestId);
     return new Response(upstream.body, { status: upstream.status, statusText: upstream.statusText, headers });
   } catch {
-    return Response.json({ detail: "origin_unavailable" }, { status: 502, headers: { "Cache-Control": "no-store" } });
+    return gatewayError("origin_unavailable", 502, requestId);
   }
 }
 

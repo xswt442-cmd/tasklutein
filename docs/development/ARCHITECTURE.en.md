@@ -25,11 +25,11 @@ A Cloudflare Tunnel origin hostname may be reachable directly, but without the g
 
 ## Database and API as Source of Truth
 
-PostgreSQL is the production source of truth; `migrations/0001_init.sql` provisions a fresh database once. Task stores title, description, status, and timestamps. Report belongs to Task through a foreign key and cascades on Task deletion. FastAPI owns Pydantic validation, SQLAlchemy transactions, and REST contracts. MCP calls the REST API rather than writing SQL, so browser and agent flows share business rules.
+PostgreSQL is the production source of truth. `migrations/0001_init.sql` initializes the existing Compose volume setup; `backend/alembic/` contains the versioned migration baseline. Existing databases must be inspected before an operator stamps that baseline. Tasks store title, description, status, and timestamps; reports reference tasks through a cascading foreign key. FastAPI owns validation, pagination, full-workspace summaries, and all writes. MCP calls REST, preserving one business-rule boundary for browsers and agents.
 
 ## MCP Transports and Limits
 
-`packages/mcp/src/server.ts` registers five tools. `index.ts` uses stdio. `http.ts` implements the Streamable HTTP server on Tencent. The HTTP transport is stateless, with an independent transport per request: suitable for scaling but no cross-request session state, server-initiated notifications, or event replay. It uses a static Bearer Token; OAuth, dynamic client registration, and public MCP Registry publication are not implemented.
+`packages/mcp/src/server.ts` registers six tools, including paginated task/report readers. `index.ts` uses stdio. `http.ts` implements the Streamable HTTP server on Tencent. The HTTP transport is stateless, with an independent transport per request: suitable for scaling but no cross-request session state, server-initiated notifications, or event replay. It uses a static Bearer Token; OAuth, dynamic client registration, and public MCP Registry publication are not implemented.
 
 The Worker forwards requests and streaming responses. MCP GET/SSE features depend on server transport support. The current stateless server primarily uses POST/JSON, and must not be advertised as a durable resumable SSE session server. Remote MCP clients must support custom Authorization headers.
 
@@ -40,6 +40,7 @@ The Worker forwards requests and streaming responses. MCP GET/SSE features depen
 - `backend/app/`: business API, token auth, ORM, response models.
 - `packages/mcp/`: stdio + HTTP adapters calling REST, no business SQL.
 - `migrations/`: PostgreSQL DDL; `deploy/`: Caddy/Docker/Tunnel.
+- `backend/alembic/`: versioned PostgreSQL migrations; `migrations/0001_init.sql` remains the initial volume bootstrap schema.
 - `test/` and `backend/tests/`: gateway, MCP, API, and auth checks.
 
 MCP, FastAPI, and PostgreSQL can be scaled or separated independently while keeping the Worker routing contract stable. Before production growth, add scoped user authorization, backup policy, credential rotation, end-to-end deployment tests, and external rate limiting.

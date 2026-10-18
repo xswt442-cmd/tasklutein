@@ -5,7 +5,19 @@ Changes are recorded in a format inspired by [Keep a Changelog](https://keepacha
 
 ## [Unreleased] / 未发布
 
-当前暂无新增变更。 / No pending changes.
+### 简体中文
+
+- 增加 Alembic PostgreSQL 基线和独立 PostgreSQL 17 集成测试配置；已有数据库需先比对结构再手工登记版本。
+- 任务和汇报 API 增加筛选、稳定分页、全工作区统计、错误码与请求追踪；MCP 新增分页读取汇报工具。
+- 增加数据库就绪检查与 64 KiB API 请求体上限；错误响应保留旧 `detail` 并附带安全字段验证信息。
+- Web 增加 Overview、任务列表与详情页面，任务筛选及页码保留在 URL 中。
+
+### English
+
+- Added an Alembic PostgreSQL baseline and isolated PostgreSQL 17 integration-test configuration. Existing databases require schema comparison before manually recording the baseline.
+- Added task/report filters, deterministic pagination, workspace-wide totals, error codes, and request tracing; MCP now exposes paginated report reads.
+- Added database readiness checks and a 64 KiB REST request-body limit. Error responses keep the legacy `detail` field while omitting rejected input values.
+- Added Overview, task-list, and task-detail pages. Task filters and page positions stay in the URL.
 
 ## [0.1.0] - 2026-10-15 / 首次发布
 

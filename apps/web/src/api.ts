@@ -1,4 +1,5 @@
 export type TaskStatus = "todo" | "in_progress" | "done";
+export type TaskSort = "updated_desc" | "created_desc";
 export type Task = {
   id: string;
   title: string;
@@ -14,9 +15,29 @@ export type Report = {
   source: "user" | "agent";
   created_at: string;
 };
+export type Page<T> = {
+  items: T[];
+  total: number;
+  limit: number;
+  offset: number;
+};
+export type TaskPage = Omit<Page<Task>, "items"> & { tasks: Task[] };
+export type ReportPage = Omit<Page<Report>, "items"> & { reports: Report[] };
+export type Overview = {
+  total: number;
+  by_status: Record<TaskStatus, number>;
+  generated_at: string;
+};
 
 export class ApiError extends Error {
-  constructor(readonly status: number, message: string) { super(message); }
+  constructor(
+    readonly status: number,
+    message: string,
+    readonly code?: string,
+    readonly requestId?: string,
+  ) {
+    super(message);
+  }
 }
 
 // Browser always talks to the same Cloudflare Worker origin.
@@ -32,7 +53,12 @@ export async function api<T>(token: string, path: string, options: RequestInit =
     cache: "no-store"
   });
   if (!response.ok) {
-    const json = await response.json().catch(() => ({})) as { detail?: unknown; error?: string };
+    const json = await response.json().catch(() => ({})) as {
+      detail?: unknown;
+      error?: string;
+      code?: unknown;
+      request_id?: unknown;
+    };
     let detail: string | undefined;
     if (typeof json.detail === "string") {
       detail = json.detail;
@@ -46,7 +72,12 @@ export async function api<T>(token: string, path: string, options: RequestInit =
         return path ? `${path}: ${message}` : message;
       }).join("; ");
     }
-    throw new ApiError(response.status, detail || json.error || "HTTP " + response.status);
+    throw new ApiError(
+      response.status,
+      detail || json.error || "HTTP " + response.status,
+      typeof json.code === "string" ? json.code : undefined,
+      typeof json.request_id === "string" ? json.request_id : undefined,
+    );
   }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;

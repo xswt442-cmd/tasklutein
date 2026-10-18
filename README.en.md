@@ -14,6 +14,7 @@
 ## Features
 
 - **Task management:** create, edit, and delete tasks; filter by todo, in progress, or done.
+- **Console:** see workspace-wide totals and search, sort, and paginate through tasks.
 - **Progress reports:** add multiple reports to a task and distinguish human from agent activity.
 - **Shared workspace:** view the same tasks and progress from a phone or desktop browser.
 - **MCP agents:** read tasks, update statuses, and submit reports through MCP.
@@ -33,6 +34,7 @@ Connect your MCP client to `https://tasklutein.xswt.fyi/mcp` and configure the A
 Agents can use these tools:
 
 - `list_tasks`: list tasks, optionally filtered by status.
+- `list_reports`: read a task's reports page by page.
 - `get_task`: read a task and its reports.
 - `create_task`: create a task.
 - `update_task`: change a task title, description, or status.

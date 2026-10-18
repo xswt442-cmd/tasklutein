@@ -41,6 +41,24 @@ docker compose -f deploy/compose.yml --env-file deploy/.env.preview.example conf
 
 `npm run build:worker` is a Wrangler dry run; it does not deploy. `npm run smoke:preview` sends unauthenticated, read-only public requests to check Preview health, anonymous rejection, and origin rejection. It does not write tasks and cannot prove real token authentication, database persistence, or MCP tool calls. Its default targets are `dev.preview.tasklutein.xswt.fyi` and `preview-origin-tasklutein.xswt.fyi`.
 
+## PostgreSQL Schema Baseline and Migrations
+
+Database changes run only through an explicit operator command; application startup does not run migrations. The existing Compose configuration mounts `migrations/0001_init.sql` into a newly created data volume. That schema corresponds to Alembic revision `0001_baseline`.
+
+Before adopting an existing Preview or Production database, confirm the environment and volume, make and verify a backup, and inspect tables, columns, defaults, checks, foreign keys, and indexes. A fresh Compose volume is initialized by `0001_init.sql` too. Only when the live schema matches `0001_baseline` may an authorized operator record the version:
+
+```sh
+docker compose -f deploy/compose.yml exec -T api alembic stamp 0001_baseline
+```
+
+Do not run `alembic upgrade head` against an unversioned database that already contains the tables; the baseline creates those tables. A PostgreSQL database that has not had the Compose init script applied and has no tables starts from an empty schema using:
+
+```sh
+docker compose -f deploy/compose.yml exec -T api alembic upgrade head
+```
+
+After a database is stamped or upgraded, a later application deployment can proceed. Execute migrations as a separate, approved operation before updating the API. Never reinitialize a database volume or apply an unreviewed downgrade to preserve application history. Production migrations still require a separately authorized server change.
+
 If the local Docker Engine is unavailable, Compose `config --quiet` validates only static configuration, not container startup or database connectivity. A real Preview write test needs an agreed test-data and cleanup procedure and must use Preview credentials only.
 
 The planned authenticated API/MCP loop can be run in an approved environment with `npm run e2e:preview`. Provide `TASKLUTEIN_PREVIEW_WEB_TOKEN` and `TASKLUTEIN_PREVIEW_AGENT_TOKEN` securely in the current process; do not echo or save them. The script is pinned to `dev.preview.tasklutein.xswt.fyi`, requires distinct tokens, creates one uniquely tagged `[smoke-test]` task, verifies Web CRUD/user attribution and MCP Agent attribution, then deletes the task and confirms API reads return 404. If cleanup fails, it reports that condition; check for the unique tagged task before rerunning. This verifies the API/MCP loop, not browser DOM, mobile keyboard behavior, or persistence after a service restart. Never set these variables to Production credentials.
