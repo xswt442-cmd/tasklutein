@@ -6,10 +6,10 @@
   <p>
     <a href="https://tasklutein.xswt.fyi">打开 Tasklutein</a> ·
     <a href="README.en.md">English</a> ·
-    <a href="CHANGELOG.md">更新日志</a> ·
     <a href="LICENSE">MIT License</a>
   </p>
 </div>
+
 
 ## 功能
 
@@ -48,6 +48,6 @@ Tasklutein 当前使用一个共享工作区。Web 和 Agent 令牌分别签发�
 
 目前不提供独立用户账户、按用户隔离的数据权限或 MCP OAuth 登录。
 
-## 项目
+## 许可证
 
-[更新日志](CHANGELOG.md) · [MIT License](LICENSE)
+[MIT](LICENSE)

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { createHttpMcpServer } from "../packages/mcp/src/http";
+import { createHttpMcpServer } from "../apps/mcp/src/http";
 import { createServer, type Server } from "node:http";
 
 const agentToken = "agent-" + "a".repeat(56);

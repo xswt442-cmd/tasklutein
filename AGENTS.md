@@ -1,12 +1,23 @@
-# Tasklutein · Agent notes
+# Tasklutein Agent Guidelines
 
-- Tasklutein is an early-stage **React + Cloudflare Worker / FastAPI + PostgreSQL / MCP** project. Make small, verifiable changes; never claim a cloud deployment or multi-user feature before it exists.
-- **Cloudflare Worker only serves static Web assets and public HTTP ingress** (`/api/*`, `/mcp`). Business rules, task/report persistence, and remote MCP execution belong to Tencent Docker. Do not connect Worker directly to PostgreSQL.
-- FastAPI is the source of truth for task CRUD, report attribution, validation, and database writes. MCP (stdio and HTTP) must call the REST API, not bypass the backend.
-- The single-workspace Web and Agent tokens are separate but both allow full task access; there is no RBAC/OAuth. Production origin gateway secrets must stay in runtime configuration and be checked independently. Never put secrets in frontend `VITE_*` variables or logs.
-- Agent reports are factual activity claims, **not verified proof of completion**. Avoid auto-marking tasks done without verification.
-- Run `npm run check`, `python -m pytest -q`, and Ruff before proposing releases. Worker dry-run and SQLite tests do not validate production PostgreSQL/Tunnel/Docker.
-- Keep `README.md` and `README.en.md` aligned. Keep `CHANGELOG.md` bilingual in **one file**. The internal `RELEASE.md` is not GitHub Release copy; user-visible per-version notes belong in `.github/release-notes/`.
-- `dev` is for development and `main` for releases. Never switch branches, commit, push, merge, reset, deploy, SSH-mutate servers, rotate keys, or edit existing user assets without explicit instructions.
-- Preserve `icons/` and ignore `testplace/` (local scratch and agent handoffs, not versioned). Avoid checking in dependencies, caches, build artifacts or personal files.
-- Read [architecture](docs/development/ARCHITECTURE.en.md), [API](docs/development/API.en.md), and [contributing](docs/development/CONTRIBUTING.en.md) when working on the corresponding part.
+## Architecture and boundaries
+
+- Tasklutein uses React/Vite, a Cloudflare Worker, FastAPI, PostgreSQL, and MCP services deployed with Docker. Inspect the current code and relevant documentation before modifying or describing behavior.
+- The Cloudflare Worker serves static assets and acts as the public HTTP gateway for `/api/*` and `/mcp`. FastAPI owns business validation, task and report persistence, and database writes. MCP tools use the REST API rather than accessing PostgreSQL directly.
+- Web and Agent tokens currently grant access to the same shared workspace. The application does not provide per-user permissions or OAuth. FastAPI determines report attribution from the authenticated caller; an Agent report is not independent proof that a task is complete.
+- Keep gateway credentials, bearer tokens, database contents, and other secrets out of Git, logs, frontend `VITE_*` values, test snapshots, and public documentation.
+
+## Documentation and reviews
+
+- Tracked files must be portable and describe current behavior, public interfaces, actual limitations, and repeatable operations. Do not include personal paths, machine names, private SSH aliases, local network settings, one-off deployment records, debugging history, pending acceptance, or development plans.
+- READMEs are user-facing. Update the authoritative section of a document rather than appending a development diary. Comments should explain constraints that still apply to the current code.
+- Keep `README.md` and `README.en.md` consistent. Keep paired technical guides consistent across languages.
+- `CHANGELOG.md` is the sole source for release-change text. GitHub Release notes are generated from the corresponding tagged version; do not create separately maintained release-note files.
+- PR descriptions must include matching Simplified Chinese and English sections describing only completed changes and checks that actually passed. Use Issues for separate future work.
+- Consult [Architecture](docs/development/ARCHITECTURE.en.md), [API](docs/development/API.en.md), [Contributing](docs/development/CONTRIBUTING.en.md), and the [Release runbook](docs/development/RELEASE.md) when relevant.
+
+## Verification and permissions
+
+- Run checks appropriate to the changes. Project verification includes `npm run check`, `python -m pytest -q`, and `ruff check apps/api/app apps/api/tests`. Worker dry-runs and SQLite tests do not validate a running production deployment.
+- Keep `icons/` intact. `testplace/` is ignored local scratch space and must not be committed.
+- Commit, push, branch changes, resets, tags, releases, deployments, server modifications, secret rotation, and production data operations require explicit authorization within the current task. Do not infer continuing authorization from previous work.

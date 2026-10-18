@@ -3,7 +3,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 
 const transport = new StdioClientTransport({
   command: process.execPath,
-  args: ["--import", "tsx", "packages/mcp/src/index.ts"],
+  args: ["--import", "tsx", "apps/mcp/src/index.ts"],
   cwd: process.cwd(),
   env: {
     ...process.env,

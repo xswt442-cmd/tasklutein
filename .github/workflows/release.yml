@@ -31,11 +31,11 @@ jobs:
           python-version: '3.12'
           cache: pip
           cache-dependency-path: |
-            backend/requirements.txt
-            backend/requirements-dev.txt
+            apps/api/requirements.txt
+            apps/api/requirements-dev.txt
       - name: Install Python dependencies used by Web integration tests
-        run: python -m pip install -r backend/requirements-dev.txt
-      - name: Verify tag, branch ancestry, and bilingual release note
+        run: python -m pip install -r apps/api/requirements-dev.txt
+      - name: Verify tag, branch ancestry, and bilingual changelog
         shell: bash
         env:
           RELEASE_TAG: ${{ github.ref_name }}
@@ -43,9 +43,7 @@ jobs:
           set -euo pipefail
           version="$(node -p 'JSON.parse(require("fs").readFileSync("package.json", "utf8")).version')"
           test "$RELEASE_TAG" = "v$version" || { echo "Tag must match package.json version"; exit 1; }
-          test -f ".github/release-notes/$RELEASE_TAG.md" || { echo "Missing release notes"; exit 1; }
-          grep -Fq '### 简体中文' ".github/release-notes/$RELEASE_TAG.md"
-          grep -Fq '### English' ".github/release-notes/$RELEASE_TAG.md"
+          node scripts/release-notes.mjs --changelog CHANGELOG.md --tag "$RELEASE_TAG" --manifest package.json > "$RUNNER_TEMP/release-notes.md"
           git fetch --no-tags origin main
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main || {
             echo "Release tag must point to an ancestor of main"
@@ -57,7 +55,12 @@ jobs:
       - name: Verify FastAPI
         run: |
           python -m pytest -q
-          ruff check backend/app backend/tests
+          ruff check apps/api/app apps/api/tests
+      - name: Generate bilingual GitHub Release from tagged CHANGELOG
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: node scripts/release-notes.mjs --changelog CHANGELOG.md --tag "$RELEASE_TAG" --manifest package.json > "$RUNNER_TEMP/release-notes.md"
       - name: Publish GitHub Release (no infrastructure deployment)
         shell: bash
         env:
@@ -71,6 +74,6 @@ jobs:
           fi
           gh release create "$RELEASE_TAG" --verify-tag \
             --title "Tasklutein $RELEASE_TAG" \
-            --notes-file ".github/release-notes/$RELEASE_TAG.md" \
+            --notes-file "$RUNNER_TEMP/release-notes.md" \
             --repo "$GITHUB_REPOSITORY"
           echo "GitHub Release published; Cloudflare and Tencent deployments remain manual."

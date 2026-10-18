@@ -12,5 +12,5 @@
     "noEmit": true,
     "types": ["node", "vite/client"]
   },
-  "include": ["apps/web/**/*.ts", "apps/web/**/*.tsx", "apps/edge/**/*.ts", "packages/**/*.ts", "test/**/*.ts"]
+  "include": ["apps/web/**/*.ts", "apps/web/**/*.tsx", "apps/edge/**/*.ts", "apps/mcp/**/*.ts", "test/**/*.ts"]
 }

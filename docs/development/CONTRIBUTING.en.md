@@ -8,11 +8,11 @@ Use `dev` for day-to-day development; `main` is the release branch. Merge featur
 
 ## TypeScript, Worker, and MCP
 
-Requires Node.js 24+, Python 3.12+, and lockfile `package-lock.json`. The browser workflow test launches a local FastAPI process and uses its own file-backed SQLite database; install `backend/requirements-dev.txt` before running the complete check:
+Requires Node.js 24+, Python 3.12+, and lockfile `package-lock.json`. The browser workflow test launches a local FastAPI process and uses its own file-backed SQLite database; install `apps/api/requirements-dev.txt` before running the complete check:
 
 ```sh
 npm ci
-python -m pip install -r backend/requirements-dev.txt
+python -m pip install -r apps/api/requirements-dev.txt
 npm run check
 ```
 
@@ -20,11 +20,11 @@ npm run check
 
 ## FastAPI and Database
 
-Requires Python 3.12+, an isolated environment, and `backend/requirements-dev.txt`. Run from the repository root:
+Requires Python 3.12+, an isolated environment, and `apps/api/requirements-dev.txt`. Run from the repository root:
 
 ```sh
 python -m pytest -q
-ruff check backend/app backend/tests
+ruff check apps/api/app apps/api/tests
 ```
 
 API behavior tests use isolated SQLite; PostgreSQL migration tests create and clean tables in an explicitly named disposable `*_test` database. GitHub Actions provides a fresh PostgreSQL 17 service and requires these integration tests to run. A local Postgres test database is opt-in:
@@ -38,12 +38,12 @@ python -m pytest -q
 
 The fixture refuses to run unless its connection names the same local `*_test` database and explicit reset permission is set. It drops the `tasks`, `reports`, and `alembic_version` tables from that database. Never point it at Production or Preview. API tests cover task CRUD, server-stamped report authorship, both access tokens, gateway-secret enforcement, filtering, pagination, and overview totals. PostgreSQL tests verify Alembic upgrades, preservation of an existing `0001_init.sql` schema and records when stamped, over-limit listing, and API writes on PostgreSQL. SQLite success does not verify Docker, Tunnel, or a live deployment.
 
-Alembic baseline: a blank PostgreSQL database runs `alembic upgrade head`. A database created by the existing `migrations/0001_init.sql` must be inspected and compared with `0001_baseline` before an operator runs `alembic stamp 0001_baseline`. Do not stamp an unverified database or run migrations automatically at application startup.
+Alembic baseline: a blank PostgreSQL database runs `alembic upgrade head`. A database created by the existing `apps/api/migrations/0001_init.sql` must be inspected and compared with `0001_baseline` before an operator runs `alembic stamp 0001_baseline`. Do not stamp an unverified database or run migrations automatically at application startup.
 
 ## Documentation and Security
 
-Keep Chinese/English README, architecture, API, deployment, and contributing guides paired. **CHANGELOG.md is a single bilingual file**; `RELEASE.md` is a maintainer runbook, and `.github/release-notes/vX.Y.Z.md` is the user-facing bilingual release note. Configuration changes in FastAPI, Worker, and MCP require updates in both languages. Do not commit `.env`, `.dev.vars`, access tokens, private database records, request logs with Authorization headers, or personal machine configuration.
+Keep Chinese/English README, architecture, API, deployment, and contributing guides paired. **CHANGELOG.md is a single bilingual file**; `docs/development/RELEASE.md` is the maintainer runbook; GitHub Release notes are automatically generated from the tagged version section in `CHANGELOG.md`. Configuration changes in FastAPI, Worker, and MCP require updates in both languages. Do not commit `.env`, `.dev.vars`, access tokens, private database records, request logs with Authorization headers, or personal machine configuration.
 
 ## Releases and Rollbacks
 
-`.github/workflows/check.yml` verifies `dev`, `main`, and PR changes. After an explicitly pushed, version-matching Tag from `main`, `.github/workflows/release.yml` verifies the release and publishes **GitHub Release notes only, not infrastructure**. Cloudflare Worker deploys `wrangler.jsonc` and `apps/web/dist`; Tencent Docker runs FastAPI, PostgreSQL and remote MCP. Deploy and verify these layers separately, as described in [`RELEASE.md`](../../RELEASE.md). There is no automatic SSH/CD, migration runner or OAuth. Validate origin secrets, container health, backups and security groups before release; roll back application and database schema separately.
+`.github/workflows/check.yml` verifies `dev`, `main`, and PR changes. After an explicitly pushed, version-matching Tag from `main`, `.github/workflows/release.yml` verifies the release and publishes **GitHub Release notes only, not infrastructure**. Cloudflare Worker deploys `wrangler.jsonc` and `apps/web/dist`; Tencent Docker runs FastAPI, PostgreSQL and remote MCP. Deploy and verify these layers separately, as described in [`RELEASE.md`](RELEASE.md). There is no automatic SSH/CD, migration runner or OAuth. Validate origin secrets, container health, backups and security groups before release; roll back application and database schema separately.

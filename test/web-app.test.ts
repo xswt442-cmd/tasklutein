@@ -12,10 +12,10 @@ import { createElement } from "react";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import App from "../apps/web/src/App";
-import { createHttpMcpServer } from "../packages/mcp/src/http";
+import { createHttpMcpServer } from "../apps/mcp/src/http";
 
 const root = process.cwd();
-const backend = join(root, "backend");
+const backend = join(root, "apps", "api");
 const webToken = "web-browser-test-token-" + "a".repeat(40);
 const agentToken = "agent-browser-test-token-" + "b".repeat(40);
 const gatewayToken = "gateway-browser-integration-token-" + "g".repeat(40);

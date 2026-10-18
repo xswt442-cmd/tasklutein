@@ -6,7 +6,7 @@ WORKDIR /srv
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --no-audit --no-fund
 
-COPY packages/mcp/src ./packages/mcp/src
+COPY apps/mcp/src ./apps/mcp/src
 USER node
 EXPOSE 3000
-CMD ["node", "--import", "tsx", "packages/mcp/src/http-entry.ts"]
+CMD ["node", "--import", "tsx", "apps/mcp/src/http-entry.ts"]
