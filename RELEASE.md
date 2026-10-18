@@ -39,7 +39,7 @@ bash scripts/production-restore-check.sh "$HOME/backups/tasklutein-production/ta
 
 ## 每次发布
 
-1. 在 `dev` 收敛变更、确认测试通过、更新 `CHANGELOG.md` 的中英文 Unreleased。版本号从 `0.1.0` 起，以实际发布状态为准，**尚未实际发布前不能宣称 v0.1.0 已上线**。
+1. 在 `dev` 收敛变更、确认测试通过、更新 `CHANGELOG.md` 的中英文 Unreleased。版本号从当前最后发布版本（目前为 `0.1.0`）递增，并在 GitHub Release 实际创建后再将条目移入已发布版本。
 2. 同步 `package.json` 与 `package-lock.json` 的版本（可在工作树检查无误后使用 `npm version X.Y.Z --no-git-tag-version`）；如果 MCP 对外协议有变化，同步更新 `packages/mcp/src/server.ts` 的版本、API/架构文档与测试。
 3. 从 `.github/release-notes/TEMPLATE.md` 复制为实际的 `.github/release-notes/vX.Y.Z.md`，写**短小、可验证、中英双语**的变化、手动部署提醒及已知限制。保持模板与实际发布记录分离。
 4. 在受控环境检查：

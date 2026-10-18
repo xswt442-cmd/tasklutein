@@ -7,17 +7,47 @@ Changes are recorded in a format inspired by [Keep a Changelog](https://keepacha
 
 ### 简体中文
 
-- 增加 Alembic PostgreSQL 基线和独立 PostgreSQL 17 集成测试配置；已有数据库需先比对结构再手工登记版本。
-- 任务和汇报 API 增加筛选、稳定分页、全工作区统计、错误码与请求追踪；MCP 新增分页读取汇报工具。
-- 增加数据库就绪检查与 64 KiB API 请求体上限；错误响应保留旧 `detail` 并附带安全字段验证信息。
-- Web 增加 Overview、任务列表与详情页面，任务筛选及页码保留在 URL 中。
+- 暂无未发布更改。
 
 ### English
 
-- Added an Alembic PostgreSQL baseline and isolated PostgreSQL 17 integration-test configuration. Existing databases require schema comparison before manually recording the baseline.
-- Added task/report filters, deterministic pagination, workspace-wide totals, error codes, and request tracing; MCP now exposes paginated report reads.
-- Added database readiness checks and a 64 KiB REST request-body limit. Error responses keep the legacy `detail` field while omitting rejected input values.
+- No unreleased changes.
+
+## [0.1.1] - 2026-10-18 / M1 增强
+
+### 简体中文
+
+**新增**
+- 增加 Alembic PostgreSQL 基线和独立 PostgreSQL 17 集成测试配置；已有数据库需先比对结构再手工登记版本。
+- 任务和汇报 API 增加筛选、稳定分页、全工作区统计；MCP 新增分页读取汇报工具。
+- Web 增加 Overview、任务列表与详情页面，任务筛选及页码保留在 URL 中。
+- 增加跨层 Request ID、INFO 级结构化日志和 Bearer 保护的数据库就绪检查；PostgreSQL 连接、连接池等待及查询均有短超时。
+- REST 与 MCP 使用独立请求体上限（64 KiB / 1 MiB）；未捕获异常的 500 响应包含公共安全响应头。
+- GitHub Deploy Production 与 Release 工作流在 Node 集成测试前准备 Python 测试依赖。
+
+**部署说明**
+- GitHub Release 记录代码版本，不会自动部署 Cloudflare Worker 或腾讯云服务；Production Worker 工作流需要在 `main` 上手动触发。
+- 已有 PostgreSQL 数据库须先核对 schema，再登记 Alembic baseline；应用不会自动运行迁移。
+
+**已知限制**
+- 仍为单一共享工作空间；没有多用户账户、RBAC、MCP OAuth 或自动数据库迁移。
+
+### English
+
+**Added**
+- Added an Alembic PostgreSQL baseline and isolated PostgreSQL 17 integration tests. Existing databases require schema comparison before the baseline is recorded.
+- Added task/report filters, stable pagination, workspace-wide totals, and paginated MCP report reads.
 - Added Overview, task-list, and task-detail pages. Task filters and page positions stay in the URL.
+- Added cross-layer request IDs, INFO-level structured logs, and bearer-protected database readiness checks with short PostgreSQL connection, pool, and query timeouts.
+- Set independent REST and MCP request-body limits (64 KiB / 1 MiB) and common security headers on uncaught 500 responses.
+- Prepared Python test dependencies before Node integration tests in the GitHub Deploy Production and Release workflows.
+
+**Deployment notes**
+- A GitHub Release records the source version; it does not deploy the Cloudflare Worker or Tencent services. The Production Worker workflow is manually triggered on `main`.
+- Existing PostgreSQL databases require schema verification before recording the Alembic baseline; the application does not run migrations automatically.
+
+**Known limitations**
+- One shared workspace only; no multiuser accounts, RBAC, MCP OAuth, or automatic database migrations.
 
 ## [0.1.0] - 2026-10-15 / 首次发布
 
