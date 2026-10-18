@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..auth import Actor, require_actor
+from ..auth import Principal, require_principal
 from ..database import get_db
 from ..models import Report
 from ..schemas import ReportCreate, ReportList, ReportView
@@ -20,9 +20,9 @@ def list_reports(
     limit: int | None = Query(default=None, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
-    _actor: Actor = Depends(require_actor),
+    principal: Principal = Depends(require_principal),
 ):
-    find_task(db, task_id)
+    find_task(db, task_id, principal.workspace_id)
     effective_limit = limit if limit is not None else 100
     statement = select(Report).where(Report.task_id == task_id)
     records = db.scalars(
@@ -31,7 +31,9 @@ def list_reports(
         .offset(offset)
         .limit(effective_limit)
     ).all()
-    total = db.scalar(select(func.count(Report.id)).where(Report.task_id == task_id)) or 0
+    total = db.scalar(
+        select(func.count(Report.id)).where(Report.task_id == task_id)
+    ) or 0
     return {"reports": records, "total": total, "limit": effective_limit, "offset": offset}
 
 
@@ -40,10 +42,16 @@ def create_report(
     task_id: UUID,
     payload: ReportCreate,
     db: Session = Depends(get_db),
-    actor: Actor = Depends(require_actor),
+    principal: Principal = Depends(require_principal),
 ):
-    find_task(db, task_id)
-    report = Report(task_id=task_id, content=payload.content, source=actor)
+    find_task(db, task_id, principal.workspace_id)
+    report = Report(
+        task_id=task_id,
+        content=payload.content,
+        source=principal.actor_type,
+        actor_user_id=principal.user_id,
+        agent_token_id=principal.agent_token_id,
+    )
     db.add(report)
     db.commit()
     db.refresh(report)

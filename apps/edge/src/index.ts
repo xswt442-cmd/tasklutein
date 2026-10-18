@@ -1,22 +1,33 @@
 /**
- * Cloudflare Worker: the ONLY public app entrypoint.
- *
- * Serves Vite assets and proxies API / remote MCP traffic to a
- * private-origin hostname backed by Tencent Docker + Cloudflare Tunnel.
- * Cloudflare never hosts business logic, the MCP server, or PostgreSQL.
+ * Cloudflare Worker: the only public app entrypoint.
+ * Web requests are authenticated by Cloudflare Access; MCP requests use personal
+ * Agent Bearer keys and are restricted to the dedicated MCP hostname.
  */
-export type EdgeEnv = {
-  ASSETS: { fetch(request: Request): Promise<Response> };
+import { createRemoteJWKSet, jwtVerify, type JWTVerifyGetKey } from "jose";
+
+export type EdgeEnv = Omit<Env, "ASSETS"> & {
+  ASSETS: Pick<Fetcher, "fetch">;
   ORIGIN_URL?: string;
   ORIGIN_GATEWAY_TOKEN?: string;
+  WEB_HOST?: string;
+  MCP_HOST?: string;
+  ACCESS_TEAM_DOMAIN?: string;
+  ACCESS_AUD?: string;
 };
 
 const GATEWAY_HEADER = "X-Tasklutein-Gateway";
+const INTERNAL_IDENTITY_HEADERS = [
+  "X-Tasklutein-Access-Issuer",
+  "X-Tasklutein-Access-Subject",
+  "X-Tasklutein-Access-Email",
+];
 const MAX_REST_REQUEST_BYTES = 64 * 1024;
 const MAX_MCP_REQUEST_BYTES = 1024 * 1024;
+const accessJwksByIssuer = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
 const ALLOWED_HEADERS = new Set([
   "authorization", "content-type", "accept", "accept-language",
   "mcp-protocol-version", "mcp-session-id", "last-event-id", "origin", "x-request-id",
+  ...INTERNAL_IDENTITY_HEADERS.map((name) => name.toLowerCase()),
 ]);
 
 function gatewayError(detail: string, status: number, requestId: string): Response {
@@ -26,11 +37,6 @@ function gatewayError(detail: string, status: number, requestId: string): Respon
   );
 }
 
-function isGatewayPath(pathname: string): boolean {
-  return pathname === "/api" || pathname.startsWith("/api/") ||
-    pathname === "/mcp" || pathname === "/mcp/";
-}
-
 function isLocalHostname(hostname: string): boolean {
   return hostname === "localhost" || hostname === "127.0.0.1";
 }
@@ -38,7 +44,7 @@ function isLocalHostname(hostname: string): boolean {
 function isAllowedOrigin(address: string): URL | undefined {
   try {
     const url = new URL(address);
-    const local = url.hostname === "localhost" || url.hostname === "127.0.0.1";
+    const local = isLocalHostname(url.hostname);
     if (url.protocol !== "https:" && !(url.protocol === "http:" && local)) return;
     if (url.username || url.password || url.search || url.hash || url.pathname !== "/") return;
     return url;
@@ -47,10 +53,77 @@ function isAllowedOrigin(address: string): URL | undefined {
   }
 }
 
+function requestHost(request: Request, incoming: URL): string | undefined {
+  const hostHeader = request.headers.get("Host");
+  if (!hostHeader) return incoming.hostname.toLowerCase();
+  if (hostHeader.includes(",")) return;
+  try {
+    const parsed = new URL(`${incoming.protocol}//${hostHeader}`);
+    if (parsed.pathname !== "/" || parsed.username || parsed.password || parsed.search || parsed.hash ||
+        parsed.host.toLowerCase() !== incoming.host.toLowerCase()) return;
+    return parsed.hostname.toLowerCase();
+  } catch {
+    return;
+  }
+}
+
+function accessConfig(env: EdgeEnv): { issuer: string; audience: string; jwks: ReturnType<typeof createRemoteJWKSet> } | undefined {
+  if (!env.ACCESS_TEAM_DOMAIN || !env.ACCESS_AUD) return;
+  const domain = env.ACCESS_TEAM_DOMAIN.replace(/\/$/, "");
+  let parsed: URL;
+  try {
+    parsed = new URL(domain.includes("://") ? domain : `https://${domain}`);
+  } catch {
+    return;
+  }
+  if (parsed.protocol !== "https:" || parsed.pathname !== "/" || parsed.search || parsed.hash || parsed.username || parsed.password) return;
+  const issuer = parsed.origin;
+  let jwks = accessJwksByIssuer.get(issuer);
+  if (!jwks) {
+    // Access signing keys are public and rotate; jose refreshes this resolver's
+    // cache without retaining request-specific identity between Worker calls.
+    jwks = createRemoteJWKSet(new URL(`${issuer}/cdn-cgi/access/certs`));
+    accessJwksByIssuer.set(issuer, jwks);
+  }
+  return {
+    issuer,
+    audience: env.ACCESS_AUD,
+    jwks,
+  };
+}
+
+function accessToken(request: Request): string | undefined {
+  return request.headers.get("Cf-Access-Jwt-Assertion") ?? undefined;
+}
+
+async function verifiedAccessIdentity(
+  request: Request,
+  env: EdgeEnv,
+  resolveKey?: JWTVerifyGetKey,
+): Promise<{ issuer: string; subject: string; email: string } | undefined> {
+  const config = accessConfig(env);
+  const token = accessToken(request);
+  if (!config || !token) return;
+  try {
+    const { payload, protectedHeader } = await jwtVerify(token, resolveKey ?? config.jwks, {
+      issuer: config.issuer,
+      audience: config.audience,
+      algorithms: ["RS256"],
+      requiredClaims: ["iss", "aud", "exp", "sub"],
+    });
+    if (protectedHeader.alg !== "RS256" || typeof payload.sub !== "string" || !payload.sub ||
+        typeof payload.email !== "string" || !payload.email) return;
+    return { issuer: config.issuer, subject: payload.sub, email: payload.email };
+  } catch {
+    return;
+  }
+}
+
 export async function proxyGateway(
   request: Request,
   env: EdgeEnv,
   fetchOrigin: (request: Request, init?: RequestInit) => Promise<Response> = fetch,
+  resolveAccessKey?: JWTVerifyGetKey,
 ): Promise<Response> {
   const incoming = new URL(request.url);
   const requestId = crypto.randomUUID();
@@ -61,16 +134,36 @@ export async function proxyGateway(
       headers: { Location: incoming.toString(), "X-Request-ID": requestId },
     });
   }
-  if (!isGatewayPath(incoming.pathname)) return env.ASSETS.fetch(request);
 
-  if (incoming.pathname !== "/api/health" &&
-      !/^Bearer \S+$/.test(request.headers.get("Authorization") ?? "")) {
+  const host = requestHost(request, incoming);
+  if (!host || !env.WEB_HOST || !env.MCP_HOST || !env.ACCESS_TEAM_DOMAIN || !env.ACCESS_AUD) {
+    return gatewayError("gateway_not_configured", 503, requestId);
+  }
+  const webHost = env.WEB_HOST.toLowerCase();
+  const mcpHost = env.MCP_HOST.toLowerCase();
+  const isWeb = host === webHost;
+  const isMcp = host === mcpHost;
+  if (!isWeb && !isMcp) return gatewayError("host_not_allowed", 404, requestId);
+
+  if (isMcp) {
+    if (incoming.pathname !== "/mcp") return gatewayError("path_not_allowed", 404, requestId);
+  } else {
+    if (incoming.pathname === "/mcp" || incoming.pathname.startsWith("/mcp/")) {
+      return gatewayError("path_not_allowed", 404, requestId);
+    }
+    if (!(incoming.pathname === "/api" || incoming.pathname.startsWith("/api/"))) {
+      return env.ASSETS.fetch(request);
+    }
+  }
+
+  const isHealth = isWeb && incoming.pathname === "/api/health";
+  const identity = isWeb && !isHealth ? await verifiedAccessIdentity(request, env, resolveAccessKey) : undefined;
+  if (isWeb && !isHealth && !identity) return gatewayError("unauthorized", 401, requestId);
+  if (isMcp && !/^Bearer \S+$/.test(request.headers.get("Authorization") ?? "")) {
     return gatewayError("unauthorized", 401, requestId);
   }
   const contentLength = Number(request.headers.get("Content-Length"));
-  const maxRequestBytes = incoming.pathname === "/mcp" || incoming.pathname.startsWith("/mcp/")
-    ? MAX_MCP_REQUEST_BYTES
-    : MAX_REST_REQUEST_BYTES;
+  const maxRequestBytes = isMcp ? MAX_MCP_REQUEST_BYTES : MAX_REST_REQUEST_BYTES;
   if (Number.isFinite(contentLength) && contentLength > maxRequestBytes) {
     return gatewayError("request_too_large", 413, requestId);
   }
@@ -80,26 +173,26 @@ export async function proxyGateway(
   }
 
   const origin = isAllowedOrigin(env.ORIGIN_URL);
-  if (!origin) {
-    return gatewayError("invalid_origin_configuration", 503, requestId);
-  }
+  if (!origin) return gatewayError("invalid_origin_configuration", 503, requestId);
 
-  // Copy the body/stream without materializing it. A strict header allowlist
-  // prevents spoofing the gateway identity or forwarding browser cookies.
   const target = new URL(incoming.pathname + incoming.search, origin);
   const upstreamRequest = new Request(target.toString(), request);
   for (const name of [...upstreamRequest.headers.keys()]) {
     if (!ALLOWED_HEADERS.has(name.toLowerCase())) upstreamRequest.headers.delete(name);
   }
+  for (const name of INTERNAL_IDENTITY_HEADERS) upstreamRequest.headers.delete(name);
+  if (identity) {
+    upstreamRequest.headers.set(INTERNAL_IDENTITY_HEADERS[0], identity.issuer);
+    upstreamRequest.headers.set(INTERNAL_IDENTITY_HEADERS[1], identity.subject);
+    upstreamRequest.headers.set(INTERNAL_IDENTITY_HEADERS[2], identity.email);
+  }
+  if (isWeb) upstreamRequest.headers.delete("authorization");
   upstreamRequest.headers.set(GATEWAY_HEADER, env.ORIGIN_GATEWAY_TOKEN);
   upstreamRequest.headers.set("X-Request-ID", requestId);
 
   try {
     const upstream = await fetchOrigin(upstreamRequest, { redirect: "manual" });
-    // Never follow redirects with origin credentials attached.
-    if (upstream.status >= 300 && upstream.status < 400) {
-      return gatewayError("origin_redirect_rejected", 502, requestId);
-    }
+    if (upstream.status >= 300 && upstream.status < 400) return gatewayError("origin_redirect_rejected", 502, requestId);
     const headers = new Headers(upstream.headers);
     headers.delete("set-cookie");
     headers.delete("server");
@@ -118,5 +211,5 @@ export async function proxyGateway(
 export default {
   fetch(request: Request, env: EdgeEnv): Promise<Response> {
     return proxyGateway(request, env);
-  }
+  },
 };

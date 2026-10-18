@@ -8,7 +8,23 @@ This file records shipped features, fixes, compatibility changes, and upgrade re
 
 ### 简体中文
 
+**新增**
+- 通过 Cloudflare Access 验证 Web 用户，并为每个用户建立独立个人工作区；任务、汇报、Overview 和 Agent 密钥按工作区隔离。
+- 在设置中创建、查看元数据并撤销个人 Agent 密钥；密钥明文仅在创建时显示一次，可设置到期时间。
+- 将 Web API 与远程 MCP 分到不同 Worker hostname；MCP 仅在专用主机的 `/mcp` 路径接受个人 Agent 密钥。
+
+**升级说明**
+- 旧共享工作区中未归属的任务需要维护者显式指派给一个已登录并建立工作区的用户；迁移保留任务和汇报，不会推断或拆分归属。旧汇报的用户及密钥归属保持为空。
+
 ### English
+
+**Added**
+- Authenticate Web users through Cloudflare Access and create an isolated personal workspace for each user; tasks, reports, Overview data, and Agent keys are scoped to that workspace.
+- Create, inspect metadata for, and revoke personal Agent keys in Settings; plaintext is displayed only at creation, with optional expiry.
+- Split the Web API and remote MCP across separate Worker hostnames; personal Agent keys are accepted for MCP only at `/mcp` on its dedicated host.
+
+**Upgrade notes**
+- Unassigned tasks in the former shared workspace require a maintainer to assign them explicitly to one signed-in user with a workspace. Migration preserves tasks and reports without inferring or splitting ownership. Legacy reports remain without user or key attribution.
 
 ## [0.1.1] - 2026-10-18
 

@@ -2,7 +2,25 @@
 name = "tasklutein"
 version = "0.1.0"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "fastapi>=0.115,<1",
+    "uvicorn[standard]>=0.34,<1",
+    "SQLAlchemy>=2.0,<3",
+    "psycopg[binary]>=3.2,<4",
+    "alembic>=1.16,<2",
+    "pydantic>=2.10,<3",
+    "python-dotenv>=1.0,<2",
+]
+
+[dependency-groups]
+dev = [
+    "httpx2>=2,<3",
+    "pytest>=8,<10",
+    "ruff>=0.13,<1",
+]
+
+[tool.uv]
+package = false
 
 [tool.ruff]
 target-version = "py312"

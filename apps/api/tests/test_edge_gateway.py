@@ -1,11 +1,11 @@
-from conftest import WEB_TOKEN
+from conftest import GATEWAY_TOKEN, gateway_headers, user_headers
 from fastapi.testclient import TestClient
 
 
 def test_origin_gateway_enforces_an_independent_secret(client: TestClient, monkeypatch):
     secret = "gateway-" + "g" * 56
     monkeypatch.setenv("EDGE_GATEWAY_TOKEN", secret)
-    browser_headers = {"Authorization": "Bearer " + WEB_TOKEN}
+    browser_headers = user_headers()
 
     missing_gateway = client.get("/api/health")
     assert missing_gateway.status_code == 403
@@ -31,7 +31,7 @@ def test_origin_gateway_enforces_an_independent_secret(client: TestClient, monke
 
 def test_gateway_fails_closed_on_short_secret(client: TestClient, monkeypatch):
     monkeypatch.setenv("EDGE_GATEWAY_TOKEN", "short")
-    response = client.get("/api/health")
+    response = client.get("/api/health", headers=gateway_headers())
     assert response.status_code == 503
     assert response.json()["code"] == "gateway_not_configured"
     assert response.json()["request_id"] == response.headers["X-Request-ID"]
@@ -40,11 +40,16 @@ def test_gateway_fails_closed_on_short_secret(client: TestClient, monkeypatch):
 def test_origin_gateway_rejects_large_rest_bodies(client: TestClient, monkeypatch):
     gateway = "gateway-" + "g" * 56
     monkeypatch.setenv("EDGE_GATEWAY_TOKEN", gateway)
+    headers = {**user_headers(), "X-Tasklutein-Gateway": gateway}
     response = client.post(
         "/api/tasks",
-        headers={"Authorization": "Bearer " + WEB_TOKEN, "X-Tasklutein-Gateway": gateway},
+        headers=headers,
         content="x" * (64 * 1024 + 1),
     )
     assert response.status_code == 413
     assert response.json()["code"] == "request_too_large"
     assert response.json()["request_id"] == response.headers["X-Request-ID"]
+
+
+def test_gateway_fixture_uses_a_long_secret():
+    assert len(GATEWAY_TOKEN) >= 32

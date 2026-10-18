@@ -20,14 +20,14 @@ function formatDate(value: string) {
   });
 }
 
-export function OverviewPage({ token }: { token: string }) {
+export function OverviewPage() {
   const overview = useQuery({
     queryKey: ["overview"],
-    queryFn: () => api<Overview>(token, "/overview"),
+    queryFn: () => api<Overview>("/overview"),
   });
   const recentTasks = useQuery({
     queryKey: ["tasks", { sort: "updated_desc", limit: 6, offset: 0 }],
-    queryFn: () => api<TaskPage>(token, "/tasks?sort=updated_desc&limit=6&offset=0"),
+    queryFn: () => api<TaskPage>("/tasks?sort=updated_desc&limit=6&offset=0"),
   });
 
   if (overview.isError) {

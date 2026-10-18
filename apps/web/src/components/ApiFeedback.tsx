@@ -5,13 +5,15 @@ export function ApiFeedback({ error, onRetry }: { error: unknown; onRetry?: () =
   const [copied, setCopied] = useState(false);
   const requestId = error instanceof ApiError ? error.requestId : undefined;
   const message = error instanceof ApiError
-    ? error.status === 401
-      ? "访问令牌无效或已失效，请重新登录。"
-      : error.status === 404
-        ? "没有找到这条记录。"
-        : error.status >= 500
-          ? "服务暂时不可用，请稍后重试。"
-          : error.message
+    ? error.code === "user_disabled"
+      ? "此账户已停用，请联系管理员。"
+      : error.status === 401
+        ? "Cloudflare Access 会话无效或已失效，请重新登录。"
+        : error.status === 404
+          ? "没有找到这条记录。"
+          : error.status >= 500
+            ? "服务暂时不可用，请稍后重试。"
+            : error.message
     : error instanceof TypeError
       ? "网络连接失败，请检查网络后重试。"
       : error instanceof Error

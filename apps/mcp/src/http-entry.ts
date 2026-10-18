@@ -1,15 +1,13 @@
 import { createHttpMcpServer } from "./http";
 
-const agentToken = process.env.AGENT_ACCESS_TOKEN;
 const gatewayToken = process.env.EDGE_GATEWAY_TOKEN;
-if (!agentToken || !gatewayToken) {
-  throw new Error("AGENT_ACCESS_TOKEN and EDGE_GATEWAY_TOKEN are required");
+if (!gatewayToken) {
+  throw new Error("EDGE_GATEWAY_TOKEN is required");
 }
 
 const port = Number(process.env.MCP_PORT ?? "3000");
 const server = createHttpMcpServer({
   apiBase: process.env.MCP_API_BASE ?? "http://api:8000",
-  agentToken,
   gatewayToken,
   allowedOrigins: (process.env.MCP_ALLOWED_ORIGINS ?? "").split(",").map((s) => s.trim()).filter(Boolean),
 });

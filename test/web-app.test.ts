@@ -12,12 +12,14 @@ import { createElement } from "react";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import App from "../apps/web/src/App";
+import { api, ApiError } from "../apps/web/src/api";
 import { createHttpMcpServer } from "../apps/mcp/src/http";
 
 const root = process.cwd();
 const backend = join(root, "apps", "api");
-const webToken = "web-browser-test-token-" + "a".repeat(40);
-const agentToken = "agent-browser-test-token-" + "b".repeat(40);
+const testIssuer = "https://access.example.test";
+const testSubject = "browser-integration-user";
+const testEmail = "browser-integration@example.test";
 const gatewayToken = "gateway-browser-integration-token-" + "g".repeat(40);
 const databaseDirectory = join(root, "node_modules", ".cache", "tasklutein", "web-test");
 const databasePath = join(databaseDirectory, `.web-e2e-${process.pid}.sqlite3`);
@@ -28,6 +30,7 @@ const nativeFetch = globalThis.fetch.bind(globalThis);
 
 let apiOrigin = "";
 let apiProcess: ChildProcess | undefined;
+let browserRequests: Array<{ url: string; headers: Headers }> = [];
 
 async function freePort(): Promise<number> {
   const server = createServer();
@@ -59,8 +62,6 @@ beforeAll(async () => {
     ...process.env,
     PYTHONPATH: backend,
     DATABASE_URL: databaseUrl,
-    WEB_ACCESS_TOKEN: webToken,
-    AGENT_ACCESS_TOKEN: agentToken,
     EDGE_GATEWAY_TOKEN: gatewayToken,
   };
   apiProcess = spawn(python, ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", String(port)], {
@@ -106,23 +107,32 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  sessionStorage.clear();
   window.history.replaceState({}, "", "/");
+  browserRequests = [];
   vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
     const localUrl = typeof input === "string" && input.startsWith("/") ? new URL(input, apiOrigin) : input;
     const headers = new Headers(init?.headers);
     headers.set("X-Tasklutein-Gateway", gatewayToken);
+    headers.set("X-Tasklutein-Access-Issuer", testIssuer);
+    headers.set("X-Tasklutein-Access-Subject", testSubject);
+    headers.set("X-Tasklutein-Access-Email", testEmail);
+    headers.set("Origin", "http://localhost:5173");
+    browserRequests.push({ url: String(localUrl), headers });
     return nativeFetch(localUrl, { ...init, headers });
   });
+  const bootstrap = await nativeFetch(new URL("/api/session/bootstrap", apiOrigin), {
+    method: "POST", headers: { ...testHeaders(), "Content-Type": "application/json" }, body: "{}",
+  });
+  if (!bootstrap.ok) throw new Error("Could not bootstrap the isolated browser-test user");
   const response = await nativeFetch(new URL("/api/tasks?limit=200", apiOrigin), {
-    headers: { Authorization: "Bearer " + webToken, "X-Tasklutein-Gateway": gatewayToken },
+    headers: testHeaders(),
   });
   if (!response.ok) throw new Error("Could not reset the isolated browser-test workspace");
   const page = await response.json() as { tasks: Array<{ id: string }> };
   for (const task of page.tasks) {
     const deleted = await nativeFetch(new URL("/api/tasks/" + task.id, apiOrigin), {
       method: "DELETE",
-      headers: { Authorization: "Bearer " + webToken, "X-Tasklutein-Gateway": gatewayToken },
+      headers: testHeaders(),
     });
     if (deleted.status !== 204) throw new Error("Could not clear an isolated browser-test task");
   }
@@ -135,9 +145,17 @@ afterEach(() => {
 
 async function enterWorkspace() {
   render(createElement(App));
-  fireEvent.change(screen.getByLabelText("工作空间访问令牌"), { target: { value: webToken } });
-  fireEvent.click(screen.getByRole("button", { name: "进入工作空间" }));
   await screen.findByRole("heading", { name: "Overview" });
+}
+
+function testHeaders() {
+  return {
+    "X-Tasklutein-Gateway": gatewayToken,
+    "X-Tasklutein-Access-Issuer": testIssuer,
+    "X-Tasklutein-Access-Subject": testSubject,
+    "X-Tasklutein-Access-Email": testEmail,
+    Origin: "http://localhost:5173",
+  };
 }
 
 describe("Tasklutein browser workflow over the real FastAPI HTTP API", () => {
@@ -153,7 +171,14 @@ describe("Tasklutein browser workflow over the real FastAPI HTTP API", () => {
     await screen.findByRole("heading", { name: title });
 
     fireEvent.change(screen.getByLabelText("任务状态"), { target: { value: "in_progress" } });
-    await waitFor(() => expect((screen.getByLabelText("任务状态") as HTMLSelectElement).value).toBe("in_progress"));
+    await waitFor(async () => {
+      const statusResponse = await nativeFetch(
+        new URL("/api/tasks?q=" + encodeURIComponent(title), apiOrigin),
+        { headers: testHeaders() },
+      );
+      const statusPage = await statusResponse.json() as { tasks: Array<{ status: string }> };
+      expect(statusPage.tasks[0]?.status).toBe("in_progress");
+    });
 
     fireEvent.change(screen.getByLabelText("工作汇报内容"), {
       target: { value: "Browser report saved through the FastAPI report endpoint." },
@@ -166,15 +191,17 @@ describe("Tasklutein browser workflow over the real FastAPI HTTP API", () => {
     await screen.findByText("Browser report saved through the FastAPI report endpoint.");
 
     const tasksResponse = await nativeFetch(new URL("/api/tasks?q=" + encodeURIComponent(title), apiOrigin), {
-      headers: { Authorization: "Bearer " + webToken, "X-Tasklutein-Gateway": gatewayToken },
+      headers: testHeaders(),
     });
     const tasks = await tasksResponse.json() as { total: number; tasks: Array<{ status: string; title: string }> };
     expect(tasks.total).toBe(1);
     expect(tasks.tasks[0]).toMatchObject({ title, status: "in_progress" });
 
-    fireEvent.click(screen.getByRole("button", { name: "退出" }));
-    expect(sessionStorage.getItem("tasklutein_token")).toBeNull();
-    expect(await screen.findByLabelText("工作空间访问令牌")).toBeTruthy();
+    expect(browserRequests.some(({ url }) => url.endsWith("/api/session/bootstrap"))).toBe(true);
+    expect(browserRequests.some(({ url }) => url.endsWith("/api/me"))).toBe(true);
+    expect(browserRequests.every(({ headers }) => !headers.has("Authorization"))).toBe(true);
+    expect(window.localStorage.length).toBe(0);
+    expect(window.sessionStorage.length).toBe(0);
   });
 
   it("preserves task filters in the URL and filters through the backend", async () => {
@@ -182,11 +209,7 @@ describe("Tasklutein browser workflow over the real FastAPI HTTP API", () => {
     const title = `E2E Search 50%_exact ${Date.now()}`;
     const response = await nativeFetch(new URL("/api/tasks", apiOrigin), {
       method: "POST",
-        headers: {
-          Authorization: "Bearer " + webToken,
-          "X-Tasklutein-Gateway": gatewayToken,
-          "Content-Type": "application/json",
-        },
+        headers: { ...testHeaders(), "Content-Type": "application/json" },
       body: JSON.stringify({ title, status: "done" }),
     });
     expect(response.status).toBe(201);
@@ -210,18 +233,14 @@ describe("Tasklutein browser workflow over the real FastAPI HTTP API", () => {
     for (let index = 0; index < 26; index += 1) {
       const response = await nativeFetch(new URL("/api/tasks", apiOrigin), {
         method: "POST",
-        headers: {
-          Authorization: "Bearer " + webToken,
-          "X-Tasklutein-Gateway": gatewayToken,
-          "Content-Type": "application/json",
-        },
+        headers: { ...testHeaders(), "Content-Type": "application/json" },
         body: JSON.stringify({ title: `${marker} ${index}` }),
       });
       expect(response.status).toBe(201);
     }
 
     const pageResponse = await nativeFetch(new URL("/api/tasks?limit=25&offset=25", apiOrigin), {
-      headers: { Authorization: "Bearer " + webToken, "X-Tasklutein-Gateway": gatewayToken },
+      headers: testHeaders(),
     });
     const page = await pageResponse.json() as { tasks: Array<{ title: string }>; total: number };
     expect(page.total).toBe(26);
@@ -234,10 +253,47 @@ describe("Tasklutein browser workflow over the real FastAPI HTTP API", () => {
     expect(screen.getByRole("button", { name: "上一页" }).hasAttribute("disabled")).toBe(false);
   });
 
+  it("creates, lists, displays once, and revokes a personal Agent key through real HTTP", async () => {
+    await enterWorkspace();
+    fireEvent.click(screen.getAllByRole("link", { name: "设置" })[0]);
+    await screen.findByRole("heading", { name: "设置" });
+    expect(screen.getAllByText(testEmail)).toHaveLength(2);
+
+    fireEvent.change(screen.getByLabelText("名称"), { target: { value: "Browser integration key" } });
+    fireEvent.click(screen.getByRole("button", { name: "创建密钥" }));
+    const onceMessage = await screen.findByText("密钥仅显示这一次");
+    const secretMessage = onceMessage.parentElement;
+    if (!secretMessage) throw new Error("The one-time key notice did not contain its secret value");
+    expect(secretMessage.textContent).toContain("密钥仅显示这一次");
+    const secret = secretMessage.querySelector("code")?.textContent;
+    expect(secret).toBeTruthy();
+
+    const listed = await nativeFetch(new URL("/api/agent-tokens", apiOrigin), { headers: testHeaders() });
+    const listing = await listed.json() as { tokens: Array<{ id: string; name: string; prefix: string }> };
+    expect(listing.tokens).toHaveLength(1);
+    expect(listing.tokens[0].name).toBe("Browser integration key");
+    expect(JSON.stringify(listing)).not.toContain(secret);
+
+    fireEvent.click(await screen.findByRole("button", { name: "撤销" }));
+    await screen.findByText(/已撤销/);
+  });
+
   it("shares the same FastAPI data and attribution through real HTTP MCP tools", async () => {
     await enterWorkspace();
     const mcpPort = await freePort();
-    const mcpServer = createHttpMcpServer({ apiBase: apiOrigin, agentToken, gatewayToken });
+    const createdKey = await nativeFetch(new URL("/api/agent-tokens", apiOrigin), {
+      method: "POST",
+      headers: { ...testHeaders(), "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "browser test MCP" }),
+    });
+    const keyResult = await createdKey.json() as { secret: string };
+    if (createdKey.status !== 201) throw new Error("Could not create an isolated Agent key for MCP integration test");
+    const agentToken = keyResult.secret;
+    const mcpServer = createHttpMcpServer({
+      apiBase: apiOrigin,
+      gatewayToken,
+      allowedOrigins: ["http://localhost:5173"],
+    });
     await new Promise<void>((resolveListen, rejectListen) => {
       mcpServer.once("error", rejectListen);
       mcpServer.listen(mcpPort, "127.0.0.1", resolveListen);
@@ -250,6 +306,7 @@ describe("Tasklutein browser workflow over the real FastAPI HTTP API", () => {
           Authorization: "Bearer " + agentToken,
           "X-Tasklutein-Gateway": gatewayToken,
           "X-Request-ID": randomUUID(),
+          Origin: `http://127.0.0.1:${mcpPort}`,
         },
       },
     });
@@ -276,8 +333,7 @@ describe("Tasklutein browser workflow over the real FastAPI HTTP API", () => {
       const userReport = await nativeFetch(new URL(`/api/tasks/${createdValue.task.id}/reports`, apiOrigin), {
         method: "POST",
         headers: {
-          Authorization: "Bearer " + webToken,
-          "X-Tasklutein-Gateway": gatewayToken,
+          ...testHeaders(),
           "Content-Type": "application/json",
         },
         body: JSON.stringify({ content: "Written through FastAPI with the Web credential." }),
@@ -310,11 +366,20 @@ describe("Tasklutein browser workflow over the real FastAPI HTTP API", () => {
     }
   });
 
-  it("clears an expired session when the authenticated backend returns 401", async () => {
-    sessionStorage.setItem("tasklutein_token", "expired-local-token");
-    render(createElement(App));
-    await screen.findByLabelText("工作空间访问令牌");
-    expect(sessionStorage.getItem("tasklutein_token")).toBeNull();
-    expect(screen.getByRole("status").textContent).toContain("令牌已失效");
+  it("formats a real FastAPI validation error without exposing rejected input", async () => {
+    await enterWorkspace();
+    const error = await api("/tasks", {
+      method: "POST",
+      body: JSON.stringify({ title: "Valid title", source: "forged" }),
+    }).then(
+      () => { throw new Error("FastAPI accepted an unexpected task field"); },
+      (reason: unknown) => reason,
+    );
+
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error).toMatchObject({ status: 422, code: "validation_error" });
+    expect((error as ApiError).message).toContain("body.source: Extra inputs are not permitted");
+    expect((error as ApiError).message).not.toContain("forged");
   });
+
 });

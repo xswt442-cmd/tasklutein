@@ -1,5 +1,5 @@
 """HTTP request and response contracts."""
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Literal
 from uuid import UUID
 
@@ -87,3 +87,29 @@ class ReportList(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+class AgentTokenCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=80)
+    expires_at: datetime | None = None
+
+    @field_validator("name")
+    @classmethod
+    def clean_name(cls, name: str) -> str:
+        name = name.strip()
+        if not name:
+            raise ValueError("name must not be blank")
+        return name
+
+    @field_validator("expires_at")
+    @classmethod
+    def validate_expiration(cls, expires_at: datetime | None) -> datetime | None:
+        if expires_at is None:
+            return None
+        if expires_at.tzinfo is None or expires_at.utcoffset() is None:
+            raise ValueError("expires_at must include a timezone")
+        if expires_at <= datetime.now(UTC):
+            raise ValueError("expires_at must be in the future")
+        return expires_at.astimezone(UTC)

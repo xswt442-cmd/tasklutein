@@ -4,11 +4,13 @@
 
 ## 服务部署结构
 
-项目的 Web/Worker 网关与业务服务独立部署。Cloudflare Worker 提供 React 静态资源，将 `/api/*` 和 `/mcp` 转发至经 Cloudflare Tunnel 暴露的 Caddy；FastAPI 负责业务与 PostgreSQL 写入，Node MCP 通过 REST API 调用 FastAPI。
+项目的 Web/Worker 网关与业务服务独立部署。Cloudflare Worker 配置两个 hostname：Web 主机提供 React 静态资源并转发 `/api/*`；MCP 主机只接受 `/mcp`。Worker 将两种入口转发至经 Cloudflare Tunnel 暴露的 Caddy；FastAPI 负责业务与 PostgreSQL 写入，Node MCP 通过 REST API 调用 FastAPI。
 
-Production 和 Preview 使用独立的 Worker 配置、Tunnel、Compose 项目、网络、数据库卷及 Token。服务容器的宿主端口限制为 `127.0.0.1` 或 Docker 网络，不把数据库开放到公网。正式站点为 [Tasklutein](https://tasklutein.xswt.fyi)。
+Production 和 Preview 使用独立的 Worker 配置、Tunnel、Compose 项目、网络、数据库卷和网关密钥。服务容器的宿主端口限制为 `127.0.0.1` 或 Docker 网络，不把数据库开放到公网。正式站点为 [Tasklutein](https://tasklutein.xswt.fyi)。
 
-环境密钥在 Cloudflare Dashboard / 服务器运行时配置；`ORIGIN_URL` 是 Worker 的可信回源地址，`ORIGIN_GATEWAY_TOKEN` 是 Worker Secret，后端验证对应的 `EDGE_GATEWAY_TOKEN`。Web 与 Agent 使用不同的业务 Bearer Token。不要把值放进仓库、前端 `VITE_*` 变量或日志。
+为 Web hostname 创建 Cloudflare Access 自托管应用，启用 One-time PIN 登录，并使用仅允许受邀邮箱的 Allow 策略。为两个 hostname 配置 Worker 路由，并按环境设置非密钥变量 `WEB_HOST`、`MCP_HOST`、`ACCESS_TEAM_DOMAIN`、`ACCESS_AUD` 和 `ORIGIN_URL`。将 `ORIGIN_GATEWAY_TOKEN` 保存为 Worker Secret；API 与 MCP 的 `EDGE_GATEWAY_TOKEN` 使用相同值。`WEB_ORIGINS` 设置为 Web 完整 Origin。MCP hostname 不加入浏览器 Access 应用：Worker 仅在该主机的精确 `/mcp` 路径接受个人 Agent 密钥，其余路径全部拒绝。向远程客户端开放前，为 MCP hostname 的 `/mcp` 路径配置 Cloudflare 速率限制规则。
+
+不要将网关密钥或 Agent 密钥写入 Git、前端 `VITE_*` 变量或日志。每个用户在设置中创建自己的 Agent 密钥，MCP 服务不使用共享 Agent 凭据。
 
 ## 本地检查与 Preview 烟测
 
@@ -16,16 +18,16 @@ Production 和 Preview 使用独立的 Worker 配置、Tunnel、Compose 项目�
 
 ```sh
 npm ci
-npm run check
-python -m pip install -r apps/api/requirements-dev.txt
-python -m pytest -q
-ruff check apps/api/app apps/api/tests
+uv sync --locked
+uv run --locked npm run check
+uv run --locked python -m pytest -q
+uv run --locked ruff check apps/api/app apps/api/tests
 docker compose -f deploy/compose.yml --env-file deploy/.env.preview.example config --quiet
 ```
 
 `npm run build:worker` 是 Wrangler dry-run；`docker compose config --quiet` 仅验证 Compose 配置。二者不会检查运行中的生产服务。
 
-`npm run smoke:preview` 发起无凭据的只读请求，检查 Preview 健康、匿名 API 拒绝和回源拒绝。通过授权后，`npm run e2e:preview` 使用当前进程提供的 `TASKLUTEIN_PREVIEW_WEB_TOKEN` 和 `TASKLUTEIN_PREVIEW_AGENT_TOKEN` 测试 REST/MCP：创建唯一标记任务、记录 user/agent 汇报、读取并删除测试记录。脚本固定指向 Preview，不要使用 Production 凭据。失败时应根据脚本提示检查测试记录清理情况。
+`npm run smoke:preview` 检查匿名 Web/MCP 入口和未授权源站拒绝；将 `TASKLUTEIN_PREVIEW_MCP_URL` 设置为专用 Preview MCP hostname。若要检查已认证的 Web 健康状态，也需通过进程环境提供当前 `TASKLUTEIN_PREVIEW_ACCESS_COOKIE`。取得 Preview 当次授权并通过 One-time PIN 登录后，`npm run e2e:preview` 使用 `TASKLUTEIN_PREVIEW_ACCESS_COOKIE`、`TASKLUTEIN_PREVIEW_MCP_URL` 以及从设置创建的个人密钥 `TASKLUTEIN_PREVIEW_AGENT_KEY`。脚本创建唯一标记任务，通过 REST/MCP 写入 user/Agent 汇报，读取后删除任务。上述值不得写入文件或日志。脚本固定指向 Preview，不得提供 Production 凭据。失败时应先按脚本提示检查测试记录清理情况。
 
 ## PostgreSQL 基线与迁移
 
@@ -43,7 +45,33 @@ Docker Compose 的新建数据库卷使用 `apps/api/migrations/0001_init.sql` �
   docker compose -f deploy/compose.yml exec -T api alembic upgrade head
   ```
 
-已有业务表但没有 `alembic_version` 的数据库不得直接运行 `alembic upgrade head`，以免重复建表。升级应用前，应单独审查和执行对应的数据库迁移；不要重新初始化已有卷或未经审查执行 downgrade。生产数据库操作需要单独授权。
+已有业务表但没有 `alembic_version` 的数据库不得直接运行 `alembic upgrade head`，以免重复建表。升级应用前，应单独审查和执行对应的数据库迁移；不要重新初始化已有卷或未经审查执行 downgrade。
+
+M1.5 工作区迁移需要先将经过核对的旧数据库升级到 `0002_identity_workspace`：
+
+```sh
+docker compose -f deploy/compose.yml --env-file deploy/.env exec -T api alembic upgrade 0002_identity_workspace
+```
+
+部署兼容该版本的 API 后，让明确指定的旧数据归属用户通过 Cloudflare Access 登录，由 `/api/session/bootstrap` 创建用户和工作区。若仍有未归属的旧任务，维护者在执行 `0003_task_workspace_required` 时必须显式提供该用户准确的 Access issuer、subject 和已验证邮箱。迁移会把所有未归属任务及原汇报归入该用户的工作区，保留记录 ID 和内容；若身份未匹配到已启用且已有工作区的用户，迁移会停止。确认值必须是 `assign-existing-tasks`。
+
+在 Bash 会话中交互输入归属信息，再运行迁移并清除环境变量：
+
+```sh
+read -r -p 'Legacy owner Access issuer: ' TASKLUTEIN_LEGACY_OWNER_ISSUER
+read -r -p 'Legacy owner Access subject: ' TASKLUTEIN_LEGACY_OWNER_SUBJECT
+read -r -p 'Legacy owner verified email: ' TASKLUTEIN_LEGACY_OWNER_EMAIL
+export TASKLUTEIN_LEGACY_OWNER_ISSUER TASKLUTEIN_LEGACY_OWNER_SUBJECT TASKLUTEIN_LEGACY_OWNER_EMAIL
+export TASKLUTEIN_LEGACY_TASKS_CONFIRM=assign-existing-tasks
+docker compose -f deploy/compose.yml --env-file deploy/.env exec \
+  -e TASKLUTEIN_LEGACY_OWNER_ISSUER -e TASKLUTEIN_LEGACY_OWNER_SUBJECT \
+  -e TASKLUTEIN_LEGACY_OWNER_EMAIL -e TASKLUTEIN_LEGACY_TASKS_CONFIRM \
+  -T api alembic upgrade 0003_task_workspace_required
+unset TASKLUTEIN_LEGACY_OWNER_ISSUER TASKLUTEIN_LEGACY_OWNER_SUBJECT \
+  TASKLUTEIN_LEGACY_OWNER_EMAIL TASKLUTEIN_LEGACY_TASKS_CONFIRM
+```
+
+核对任务与汇报数量及记录 ID 后，再允许第二个受邀用户写入。若不存在未归属任务，执行 `0003_task_workspace_required` 无需提供上述归属信息。系统会阻止迁移回退到不包含工作区隔离的 `0001_baseline`；应用回退也必须保留工作区范围校验。Production 迁移和部署仍需本轮单独授权。
 
 ## 发布、备份与恢复
 

@@ -28,6 +28,13 @@ export type Overview = {
   by_status: Record<TaskStatus, number>;
   generated_at: string;
 };
+export type User = { id: string; email: string; created_at: string };
+export type Workspace = { id: string; name: string; created_at: string };
+export type Session = { user: User; workspace: Workspace };
+export type AgentToken = {
+  id: string; name: string; prefix: string; created_at: string;
+  expires_at: string | null; revoked_at?: string | null;
+};
 
 export class ApiError extends Error {
   constructor(
@@ -42,15 +49,15 @@ export class ApiError extends Error {
 
 // Browser always talks to the same Cloudflare Worker origin.
 // The Worker routes /api/* to Tencent; Vite proxies /api/* locally.
-export async function api<T>(token: string, path: string, options: RequestInit = {}): Promise<T> {
+export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch("/api" + path, {
     ...options,
     headers: {
-      Authorization: "Bearer " + token,
       "Content-Type": "application/json",
       ...(options.headers ?? {})
     },
-    cache: "no-store"
+    cache: "no-store",
+    credentials: "same-origin"
   });
   if (!response.ok) {
     const json = await response.json().catch(() => ({})) as {

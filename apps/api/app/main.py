@@ -14,13 +14,15 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import OperationalError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from .auth import Actor, require_actor
+from .auth import Principal, require_principal
 from .database import get_db
+from .routers.agent_tokens import router as agent_token_router
 from .routers.overview import router as overview_router
 from .routers.reports import router as report_router
+from .routers.session import router as session_router
 from .routers.tasks import router as task_router
 
 app = FastAPI(
@@ -73,6 +75,20 @@ async def handle_http_error(request: Request, exc: HTTPException):
     )
 
 
+@app.exception_handler(OperationalError)
+async def handle_database_unavailable(request: Request, _exc: OperationalError):
+    request_id = request_id_for(request)
+    return JSONResponse(
+        {"detail": "database_unavailable", "code": "database_unavailable", "request_id": request_id},
+        status_code=503,
+        headers={
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+            "X-Request-ID": request_id,
+        },
+    )
+
+
 @app.exception_handler(RequestValidationError)
 async def handle_validation_error(request: Request, exc: RequestValidationError):
     request_id = request_id_for(request)
@@ -119,6 +135,7 @@ async def require_edge_gateway(request: Request, call_next):
     # This check is independent of user/agent Bearer auth. Production Docker
     # requires EDGE_GATEWAY_TOKEN; local development may omit it.
     if request.url.path.startswith("/api/"):
+        request.state.gateway_verified = False
         if expected is not None:
             if len(expected) < 32 or expected.startswith("REPLACE_WITH"):
                 request_id = str(uuid4())
@@ -137,7 +154,8 @@ async def require_edge_gateway(request: Request, call_next):
                     status_code=403,
                     headers={"Cache-Control": "no-store", "X-Request-ID": request_id},
                 )
-    trusted_request_id = expected is None or request.url.path.startswith("/api/")
+            request.state.gateway_verified = True
+    trusted_request_id = getattr(request.state, "gateway_verified", False)
     try:
         request_id = str(UUID(supplied_request_id)) if trusted_request_id and supplied_request_id else str(uuid4())
     except ValueError:
@@ -179,7 +197,7 @@ def health():
 
 @app.get("/api/ready", tags=["health"])
 def ready(
-    _actor: Actor = Depends(require_actor),
+    _principal: Principal = Depends(require_principal),
     db: Session = Depends(get_db),
 ):
     try:
@@ -190,6 +208,8 @@ def ready(
     return {"status": "ready"}
 
 
+app.include_router(session_router)
+app.include_router(agent_token_router)
 app.include_router(task_router)
 app.include_router(report_router)
 app.include_router(overview_router)

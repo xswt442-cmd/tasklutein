@@ -23,7 +23,7 @@ function formatDate(value: string) {
   });
 }
 
-export function TaskDetailPage({ token }: { token: string }) {
+export function TaskDetailPage() {
   const { taskId = "" } = useParams();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -37,12 +37,12 @@ export function TaskDetailPage({ token }: { token: string }) {
 
   const taskQuery = useQuery({
     queryKey: ["task", taskId],
-    queryFn: () => api<{ task: Task }>(token, "/tasks/" + taskId),
+    queryFn: () => api<{ task: Task }>("/tasks/" + taskId),
     enabled: Boolean(taskId),
   });
   const reportsQuery = useQuery({
     queryKey: ["reports", taskId, 25, reportOffset],
-    queryFn: () => api<ReportPage>(token, `/tasks/${taskId}/reports?limit=25&offset=${reportOffset}`),
+    queryFn: () => api<ReportPage>(`/tasks/${taskId}/reports?limit=25&offset=${reportOffset}`),
     enabled: Boolean(taskId),
   });
 
@@ -59,7 +59,7 @@ export function TaskDetailPage({ token }: { token: string }) {
 
   const updateTask = useMutation({
     mutationFn: (changes: Partial<Pick<Task, "title" | "description" | "status">>) =>
-      api<{ task: Task }>(token, "/tasks/" + taskId, { method: "PATCH", body: JSON.stringify(changes) }),
+      api<{ task: Task }>("/tasks/" + taskId, { method: "PATCH", body: JSON.stringify(changes) }),
     onSuccess: async ({ task }) => {
       queryClient.setQueryData(["task", taskId], { task });
       await Promise.all([
@@ -71,7 +71,7 @@ export function TaskDetailPage({ token }: { token: string }) {
   });
 
   const addReport = useMutation({
-    mutationFn: () => api(token, `/tasks/${taskId}/reports`, {
+    mutationFn: () => api(`/tasks/${taskId}/reports`, {
       method: "POST",
       body: JSON.stringify({ content: reportDraft.trim() }),
     }),
@@ -85,7 +85,7 @@ export function TaskDetailPage({ token }: { token: string }) {
   });
 
   const deleteTask = useMutation({
-    mutationFn: () => api<void>(token, "/tasks/" + taskId, { method: "DELETE" }),
+    mutationFn: () => api<void>("/tasks/" + taskId, { method: "DELETE" }),
     onSuccess: async () => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["tasks"] }),

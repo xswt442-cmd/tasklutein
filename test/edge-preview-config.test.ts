@@ -19,7 +19,7 @@ it("routes Worker Preview builds to the dedicated HTTPS origin", () => {
   expect(previewOrigin).toBe("https://preview-origin-tasklutein.xswt.fyi");
 });
 
-it("keeps API and MCP paths Worker-first", () => {
+it("runs every request through the Worker before serving static assets", () => {
   const workerFirst = configResult.config.assets?.run_worker_first;
-  expect(workerFirst).toEqual(expect.arrayContaining(["/api", "/api/*", "/mcp", "/mcp/*"]));
+  expect(workerFirst).toBe(true);
 });

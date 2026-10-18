@@ -16,7 +16,7 @@ const statusLabels: Record<TaskStatus, string> = {
 const validStatuses = new Set<TaskStatus>(["todo", "in_progress", "done"]);
 const validSorts = new Set<TaskSort>(["updated_desc", "created_desc"]);
 
-export function TasksPage({ token }: { token: string }) {
+export function TasksPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -41,7 +41,7 @@ export function TasksPage({ token }: { token: string }) {
       const params = new URLSearchParams({ sort, limit: String(limit), offset: String(offset) });
       if (status !== "all") params.set("status", status);
       if (q) params.set("q", q);
-      return api<TaskPage>(token, "/tasks?" + params.toString());
+      return api<TaskPage>("/tasks?" + params.toString());
     },
     placeholderData: keepPreviousData,
   });
@@ -60,7 +60,7 @@ export function TasksPage({ token }: { token: string }) {
   }, [limit, offset, setSearchParams, tasks.data, tasks.isPlaceholderData]);
 
   const createTask = useMutation({
-    mutationFn: () => api<{ task: { id: string } }>(token, "/tasks", {
+    mutationFn: () => api<{ task: { id: string } }>("/tasks", {
       method: "POST",
       body: JSON.stringify({ title: title.trim(), description }),
     }),

@@ -7,7 +7,7 @@ from fastapi import status as http_status
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from ..auth import Actor, require_actor
+from ..auth import Principal, require_principal
 from ..database import get_db
 from ..models import Task
 from ..schemas import TaskCreate, TaskList, TaskSort, TaskStatus, TaskUpdate, TaskView
@@ -15,8 +15,8 @@ from ..schemas import TaskCreate, TaskList, TaskSort, TaskStatus, TaskUpdate, Ta
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 
 
-def find_task(db: Session, task_id: UUID) -> Task:
-    task = db.get(Task, task_id)
+def find_task(db: Session, task_id: UUID, workspace_id: UUID) -> Task:
+    task = db.scalar(select(Task).where(Task.id == task_id, Task.workspace_id == workspace_id))
     if task is None:
         raise HTTPException(status_code=404, detail="task_not_found")
     return task
@@ -30,9 +30,9 @@ def list_tasks(
     limit: int | None = Query(default=None, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
-    _actor: Actor = Depends(require_actor),
+    principal: Principal = Depends(require_principal),
 ):
-    filters = []
+    filters = [Task.workspace_id == principal.workspace_id]
     if status is not None:
         filters.append(Task.status == status)
     if q and q.strip():
@@ -57,9 +57,9 @@ def list_tasks(
 def create_task(
     payload: TaskCreate,
     db: Session = Depends(get_db),
-    _actor: Actor = Depends(require_actor),
+    principal: Principal = Depends(require_principal),
 ):
-    task = Task(**payload.model_dump())
+    task = Task(**payload.model_dump(), workspace_id=principal.workspace_id)
     db.add(task)
     db.commit()
     db.refresh(task)
@@ -70,9 +70,9 @@ def create_task(
 def get_task(
     task_id: UUID,
     db: Session = Depends(get_db),
-    _actor: Actor = Depends(require_actor),
+    principal: Principal = Depends(require_principal),
 ):
-    return {"task": TaskView.model_validate(find_task(db, task_id))}
+    return {"task": TaskView.model_validate(find_task(db, task_id, principal.workspace_id))}
 
 
 @router.patch("/{task_id}", response_model=dict)
@@ -80,9 +80,9 @@ def update_task(
     task_id: UUID,
     payload: TaskUpdate,
     db: Session = Depends(get_db),
-    _actor: Actor = Depends(require_actor),
+    principal: Principal = Depends(require_principal),
 ):
-    task = find_task(db, task_id)
+    task = find_task(db, task_id, principal.workspace_id)
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(task, field, value)
     task.updated_at = datetime.now(UTC)
@@ -95,9 +95,9 @@ def update_task(
 def delete_task(
     task_id: UUID,
     db: Session = Depends(get_db),
-    _actor: Actor = Depends(require_actor),
+    principal: Principal = Depends(require_principal),
 ):
-    task = find_task(db, task_id)
+    task = find_task(db, task_id, principal.workspace_id)
     db.delete(task)
     db.commit()
     return Response(status_code=http_status.HTTP_204_NO_CONTENT)

@@ -5,7 +5,7 @@
 ## 发布边界
 
 - `dev` 用于开发和 Preview，`main` 用于正式版本。
-- Cloudflare Worker 提供 React 静态资源及 `/api/*`、`/mcp` 公网网关。
+- Cloudflare Worker 在 Access 保护的 Web hostname 提供 React 静态资源和 `/api/*`；独立 MCP hostname 只开放 `/mcp`。
 - FastAPI、PostgreSQL、MCP、Caddy 和 Tunnel 由腾讯云 Docker 环境承载。
 - 创建 Tag 或 GitHub Release 不更新 Worker、服务器、数据库或密钥。生产变更须获得单独授权。
 
@@ -17,10 +17,10 @@
 
    ```sh
    npm ci
-   npm run check
-   python -m pip install -r apps/api/requirements-dev.txt
-   python -m pytest -q
-   ruff check apps/api/app apps/api/tests
+   uv sync --locked
+   uv run --locked npm run check
+   uv run --locked python -m pytest -q
+   uv run --locked ruff check apps/api/app apps/api/tests
    docker compose -f deploy/compose.yml --env-file deploy/.env.preview.example config --quiet
    ```
 
@@ -43,15 +43,16 @@
 
 使用 `.github/workflows/deploy.yml` 的手动 Production 工作流（需配置受限 Cloudflare 凭据及 `production` Environment），或在明确授权的环境中运行 `npm run deploy:worker`。
 
-- 部署时保留 Dashboard 管理的 `ORIGIN_URL` 和 Secret `ORIGIN_GATEWAY_TOKEN`；`wrangler.jsonc` 使用 `keep_vars`，部署命令带 `--keep-vars`。
-- 发布后只读核对网关绑定的名称、类型、非敏感公开回源 URL，以及 `/api/health` 200、匿名任务 API 401、源站直接匿名访问 403。
-- 经过授权后再执行含测试数据的 Web CRUD 与 MCP 校验。Worker 回退与服务端版本回退需分别记录。
+- 配置独立的 Web 与 MCP hostname 路由到同一 Worker。Web hostname 配置 Cloudflare Access One-time PIN 和邀请邮箱 Allow 策略；MCP hostname 不配置浏览器 Access。
+- 为 Worker 设置 `WEB_HOST`、`MCP_HOST`、`ACCESS_TEAM_DOMAIN`、`ACCESS_AUD` 和 `ORIGIN_URL`；部署时保留 Dashboard 管理的变量及 Secret `ORIGIN_GATEWAY_TOKEN`。API 和 MCP 服务使用相同的 `EDGE_GATEWAY_TOKEN`。`wrangler.jsonc` 使用 `keep_vars`，部署命令带 `--keep-vars`。
+- 在 MCP hostname 的 `/mcp` 路径配置 Cloudflare 速率限制。发布后只读核对 Access 登录、Worker 的主机与路径限制、未认证 Web/MCP 请求拒绝及源站直接访问拒绝。
+- 经授权后，先完成 Preview 的双账号隔离验收，再运行 `npm run e2e:preview` 验证 Web CRUD、MCP 和汇报来源。该脚本使用临时 Preview Access Cookie 与个人 Agent 密钥；Worker 回退与服务端版本回退需分别审查，不能回退到不执行工作区隔离的版本。
 
 ## 腾讯云 API/MCP 与数据库发布
 
 1. 使用项目维护账户在目标服务器上审查 Docker Compose、数据库卷、实际镜像版本及 Preview/Production 隔离。
 2. 数据库 Schema 变更前，先执行经批准的备份与恢复验证；备份脚本是 `scripts/production-backup.sh`，隔离恢复验证为 `scripts/production-restore-check.sh`。脚本应在具备 Docker 授权的目标服务器上执行，不通过本地开发机模拟生产备份。
-3. 按 [部署手册](DEPLOYMENT.zh-CN.md) 的 Alembic 规则检查已有数据库并单独执行迁移；不得重新初始化已有数据卷。
+3. 按 [部署手册](DEPLOYMENT.zh-CN.md) 的 Alembic 规则检查已有数据库并单独执行迁移；不得重新初始化已有数据卷。M1.5 升级先执行 `0002_identity_workspace`，让维护者指定的旧数据归属用户通过 Access 建立工作区，再以该用户的 issuer、subject、email 和确认值执行 `0003_task_workspace_required`。迁移保留原任务及汇报 ID、内容和来源；不得猜测旧任务的归属。
 4. 更新相互兼容的 FastAPI/MCP 容器，检查健康状态、任务/汇报持久化、MCP 工具和认证边界。
 5. 出现鉴权、数据、兼容性或服务异常时，停止下一步变更，按审查过的版本和 Schema 策略恢复。
 
