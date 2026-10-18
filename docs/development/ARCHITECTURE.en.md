@@ -6,7 +6,7 @@ English · [简体中文](ARCHITECTURE.zh-CN.md)
 
 Cloudflare **only serves the web frontend and public ingress**. The Worker serves built React files with Assets and proxies `/api/*` and `/mcp` to a fixed HTTPS Tencent origin. It never connects to PostgreSQL, runs task business rules, or hosts the MCP server.
 
-Tencent Cloud `tx-z02` runs Docker Compose services: `api` (FastAPI/SQLAlchemy), `db` (PostgreSQL), `mcp` (Node.js/MCP SDK Streamable HTTP), `router` (Caddy), and optionally `tunnel` (cloudflared).
+The Tencent Cloud environment runs Docker Compose services: `api` (FastAPI/SQLAlchemy), `db` (PostgreSQL), `mcp` (Node.js/MCP SDK Streamable HTTP), `router` (Caddy), and optionally `tunnel` (cloudflared).
 
 ```text
 Browser -> https://app.example.com/ -- Cloudflare Worker Assets -> React

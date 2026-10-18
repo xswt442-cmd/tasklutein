@@ -13,7 +13,7 @@
     "build:web": "vite build --config apps/web/vite.config.ts",
     "build:worker": "wrangler deploy --dry-run --outdir .wrangler/dist",
     "typecheck": "tsc --noEmit",
-    "check:scripts": "node --check scripts/preview-smoke.mjs && node --check scripts/preview-e2e.mjs",
+    "check:scripts": "node --check scripts/preview-smoke.mjs && node --check scripts/preview-e2e.mjs && node --test scripts/release-notes.node-check.mjs",
     "test": "vitest run",
     "docs:check": "node scripts/check-docs.mjs",
     "smoke:preview": "node scripts/preview-smoke.mjs",

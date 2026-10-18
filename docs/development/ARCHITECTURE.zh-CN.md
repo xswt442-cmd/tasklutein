@@ -6,7 +6,7 @@
 
 Cloudflare **只负责静态前端与公网网关**。Worker 通过 Assets binding 提供 React 构建后的文件，将 `/api/*` 和 `/mcp` 代理到固定的腾讯云 HTTPS 源站；它不连接 PostgreSQL、不执行任务逻辑、不托管 MCP Server。
 
-腾讯云 `tx-z02` 通过 Docker Compose 运行 `api` (FastAPI/SQLAlchemy)、`db` (PostgreSQL)、`mcp` (Node.js/MCP SDK Streamable HTTP)、`router` (Caddy) 和可选的 `tunnel` (cloudflared)。
+腾讯云环境通过 Docker Compose 运行 `api` (FastAPI/SQLAlchemy)、`db` (PostgreSQL)、`mcp` (Node.js/MCP SDK Streamable HTTP)、`router` (Caddy) 和可选的 `tunnel` (cloudflared)。
 
 ```text
 Browser -> https://app.example.com/ -- Cloudflare Worker Assets -> React

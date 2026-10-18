@@ -42,8 +42,8 @@ Alembic 基线：全新空 PostgreSQL 执行 `alembic upgrade head`。采用旧�
 
 ## 文档与安全
 
-中文和英文 README、架构、API、部署和贡献指南成对维护；**CHANGELOG.md 为单文件中英双语**，`RELEASE.md` 是维护者流程，`.github/release-notes/vX.Y.Z.md` 才是发布给用户的双语说明。后端、Worker 或 MCP 的用户可见配置需要两种语言同步。禁止提交 `.env`、`.dev.vars`、Token、私有数据库内容、带 Authorization Header 的请求日志或个人机器专属配置。
+中文和英文 README、架构、API、部署和贡献指南成对维护；**CHANGELOG.md 为单文件中英双语**，`docs/development/RELEASE.md` 是维护者发布流程；GitHub Release 从对应 Tag 的 `CHANGELOG.md` 自动生成双语说明。后端、Worker 或 MCP 的用户可见配置需要两种语言同步。禁止提交 `.env`、`.dev.vars`、Token、私有数据库内容、带 Authorization Header 的请求日志或个人机器专属配置。
 
 ## 发布与回滚
 
-`.github/workflows/check.yml` 在 `dev` / `main` / PR 验证代码；`.github/workflows/release.yml` 在显式推送符合版本号、位于 `main` 历史中的 Tag 后校验并创建 GitHub Release，**不自动部署基础设施**。Worker 使用 `wrangler.jsonc` 和 `apps/web/dist` 部署到 Cloudflare；FastAPI、PostgreSQL、远程 MCP 部署到腾讯云 Docker。这两层必须分别显式发布并验收，具体流程见 [`RELEASE.md`](../../RELEASE.md)。当前没有自动 SSH/CD、数据库迁移执行器或 OAuth。部署前确认源站密钥、容器状态、备份和安全组，故障时应用与 Schema 分别回滚。
+`.github/workflows/check.yml` 在 `dev` / `main` / PR 验证代码；`.github/workflows/release.yml` 在显式推送符合版本号、位于 `main` 历史中的 Tag 后校验并创建 GitHub Release，**不自动部署基础设施**。Worker 使用 `wrangler.jsonc` 和 `apps/web/dist` 部署到 Cloudflare；FastAPI、PostgreSQL、远程 MCP 部署到腾讯云 Docker。这两层必须分别显式发布并验收，具体流程见 [`RELEASE.md`](RELEASE.md)。当前没有自动 SSH/CD、数据库迁移执行器或 OAuth。部署前确认源站密钥、容器状态、备份和安全组，故障时应用与 Schema 分别回滚。
