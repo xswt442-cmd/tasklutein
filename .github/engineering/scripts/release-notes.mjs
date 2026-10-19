@@ -44,7 +44,7 @@ export function extractReleaseNotes(changelog, tag) {
   }
 
   const start = matches[0];
-  let end = lines.findIndex((line, index) => index > start && line.startsWith('## '));
+  let end = lines.findIndex((line, index) => index > start && VERSION_HEADING.test(line));
   if (end < 0) end = lines.length;
   const body = lines.slice(start + 1, end);
   // Keep a Changelog commonly appends link reference definitions after its final version.
@@ -64,6 +64,12 @@ export function extractReleaseNotes(changelog, tag) {
     if (section.includes('TODO') || section.includes('TBD')) {
       throw new Error(language + ' release section contains an unfinished placeholder');
     }
+  }
+  if (/^#{1,2}\s+下载\s*\/\s*Downloads\s*$/mi.test(chinese + '\n' + english)) {
+    throw new Error('downloads must be placed in their matching language section');
+  }
+  if (/更新说明\s*\/\s*Release highlights/i.test(chinese + '\n' + english)) {
+    throw new Error('release sections must not repeat the release title');
   }
   return '# ' + tag + '\n\n' + body.join('\n').trim() + '\n';
 }

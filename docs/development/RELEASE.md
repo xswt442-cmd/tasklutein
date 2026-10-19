@@ -31,13 +31,14 @@
 
 1. 将经过审查、CI 通过的变更合入 `main`。
 2. 在 `main` 的发布提交创建并推送新的注释 Tag `vX.Y.Z`。
-3. `.github/workflows/release.yml` 验证 Tag 与清单版本一致、属于 `main` 历史、代码检查通过，并从该提交的 CHANGELOG 指定版本自动提取中英文 Release 内容：
+3. `.github/workflows/release.yml` 验证 Tag 与清单版本一致、属于 `main` 历史、代码检查通过，并从该提交的 CHANGELOG 指定版本自动提取中英文 Release 内容。Release 标题只写产品和版本号；正文按简体中文、英文分成两个模块，不增加“更新说明 / Release highlights”标题：
 
    ```sh
    node scripts/release-notes.mjs --changelog CHANGELOG.md --tag vX.Y.Z --manifest package.json
    ```
 
-4. 正文提取失败、Tag/Release 已存在或 CI 不通过时，发布任务失败，不改写旧 Tag 或旧 Release 资产。
+4. 如果发布内容包含下载信息，将中文下载表放在简体中文模块，英文下载表放在英文模块；只使用已经验证的 Release 附件，不在正文末尾添加中英混排的下载区。本项目当前没有独立安装资产，因此不生成下载表。
+5. 正文提取失败、Tag/Release 已存在或 CI 不通过时，发布任务失败，不改写旧 Tag 或旧 Release 资产。
 
 ## Cloudflare Worker 发布
 

@@ -119,6 +119,39 @@ test('preserves classified bilingual Added, Changed, and Fixed entries without f
   assert.ok(notes.indexOf('### 简体中文') < notes.indexOf('### English'));
 });
 
+test('keeps download details inside matching language modules without a mixed footer', () => {
+  const withDownloads = [
+    '## [2.0.2] - 2026-10-19',
+    '',
+    '### 简体中文',
+    '',
+    '**下载**',
+    '- Windows x64： [安装包](https://example.com/app.exe)。',
+    '',
+    '### English',
+    '',
+    '**Downloads**',
+    '- Windows x64: [installer](https://example.com/app.exe).',
+  ].join('\n');
+  const notes = extractReleaseNotes(withDownloads, 'v2.0.2');
+  const chinese = notes.indexOf('### 简体中文');
+  const english = notes.indexOf('### English');
+  assert.ok(notes.indexOf('**下载**') > chinese && notes.indexOf('**下载**') < english);
+  assert.ok(notes.indexOf('**Downloads**') > english);
+  assert.doesNotMatch(notes, /^## 下载 \/ Downloads$/m);
+  assert.doesNotMatch(notes, /更新说明\s*\/\s*Release highlights/i);
+});
+
+test('rejects a mixed-language downloads footer and redundant release title', () => {
+  const footer = changelog.replace(
+    '### English\n\n- Fixed list filtering.',
+    '### English\n\n- Fixed list filtering.\n\n## 下载 / Downloads\n\n| 平台 / Platform | 文件 / File |',
+  );
+  assert.throws(() => extractReleaseNotes(footer, 'v1.2.4'), /matching language section/);
+  const redundantTitle = changelog.replace('- 修复列表筛选。', '- 更新说明 / Release highlights');
+  assert.throws(() => extractReleaseNotes(redundantTitle, 'v1.2.4'), /repeat the release title/);
+});
+
 test('allows a fix-only version, including legacy unclassified release history', () => {
   const fixed = [
     '## [2.0.1]',

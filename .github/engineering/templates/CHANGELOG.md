@@ -2,6 +2,8 @@
 
 本文件只记录已经实现、与使用或兼容性有关的重要变化。GitHub Release 从对应 Tag 的版本章节生成，不记录开发流水或未完成计划。
 
+Release 标题只写产品与版本号；不要添加“更新说明 / Release highlights”标题。需要提供安装或下载信息时，将 `下载` 与 `Downloads` 内容分别放进简体中文和英文模块，不在版本章节末尾另放中英混排的下载区。
+
 This changelog records completed, meaningful product changes. GitHub Release notes come from the matching tagged version, not a separately maintained summary.
 
 ## [Unreleased]
