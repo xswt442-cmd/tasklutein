@@ -12,7 +12,7 @@
 
 ## Features
 
-- **Personal workspaces:** sign in through Cloudflare Access; each verified user has a separate workspace.
+- **Personal workspaces:** visitors can browse the frontend preview; after Cloudflare Access sign-in, each user has a separate workspace.
 - **Task management:** create and edit tasks, then archive them or permanently delete their history; filter, search, sort, and paginate current tasks.
 - **Overview and history:** see current task totals and recent activity; browse read-only archived task snapshots and reports, and remove individual or grouped activity history.
 - **Progress reports:** add multiple reports to a task and distinguish user from Agent activity.
@@ -20,7 +20,7 @@
 
 ## Get started
 
-1. Open [Tasklutein](https://tasklutein.xswt.fyi) and sign in through Cloudflare Access.
+1. Open [Tasklutein](https://tasklutein.xswt.fyi) to browse the interface; sign in through Cloudflare Access to use a workspace.
 2. Create tasks, update their statuses, and record progress. When removing a task, archive it to keep its history or permanently delete the full history.
 3. To connect an Agent, open Settings, create a personal Agent key, and save the secret immediately. Its plaintext cannot be viewed again; you can edit its name or expiry and revoke it. Lists show only `tlu_` plus the next three key characters, and retain revoked keys with their status.
 

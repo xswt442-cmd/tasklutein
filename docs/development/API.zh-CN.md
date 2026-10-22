@@ -6,7 +6,7 @@
 
 Web 和远程 MCP 使用各自配置的 Cloudflare Worker hostname。Web 主机提供静态页面和 `/api/*`；MCP 主机只提供精确路径 `/mcp`，该主机上的其他路径返回 `404`。Web 主机上的 `/mcp` 不会转发到 MCP Server。使用部署配置中的 `<web-host>` 和 `<mcp-host>`，不要将两种入口混为一个 URL。
 
-网页 API 请求依赖 Cloudflare Access。Worker 验证 Access JWT 后，将签发方、subject 和已验证邮箱作为内部身份 Header 转发给 FastAPI，并移除客户端伪造的同名 Header。除 `GET /api/health` 外，Web API 要求已建立的用户身份；首次进入时由 `POST /api/session/bootstrap` 建立用户和个人工作区。浏览器不发送业务 Bearer Token。
+网页前端可由游客浏览，游客界面不请求工作区数据，也不提供业务操作。Web API 路径 `/api/*` 由 Cloudflare Access 保护。Worker 验证 Access JWT 后，将签发方、subject 和已验证邮箱作为内部身份 Header 转发给 FastAPI，并移除客户端伪造的同名 Header。除 `GET /api/health` 外，Web API 要求已建立的用户身份；登录后的 `POST /api/session/bootstrap` 建立或读取用户和个人工作区。`GET /api/session/login` 是 Worker 提供的 Access 登录入口，验证后重定向到首页。浏览器不发送业务 Bearer Token。
 
 远程 MCP 客户端将个人 Agent 密钥作为 `Authorization: Bearer <AGENT_KEY>` 发送到 `https://<mcp-host>/mcp`。MCP Server 用该密钥调用 FastAPI；密钥对应的用户与个人工作区决定其可见数据。客户端不得提供 `X-Tasklutein-Gateway` 或内部身份 Header。Worker 注入 `ORIGIN_GATEWAY_TOKEN` 对应的网关 Header；FastAPI 与 MCP HTTP 通过 `EDGE_GATEWAY_TOKEN` 校验。
 

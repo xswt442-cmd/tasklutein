@@ -233,7 +233,7 @@ describe("Cloudflare Worker with real local FastAPI and MCP services", () => {
     originRouter = createOriginRouter(apiBase, mcpBase);
     const originPort = await startServer(originRouter);
     const originBase = `http://127.0.0.1:${originPort}`;
-    const assetBinding = { fetch: async () => { throw new Error("Unexpected static asset request in API/MCP integration"); } };
+    const assetBinding = { fetch: async () => new Response("public frontend assets") };
     apiEnv = {
       ASSETS: assetBinding,
       ORIGIN_URL: originBase,
@@ -249,6 +249,11 @@ describe("Cloudflare Worker with real local FastAPI and MCP services", () => {
 
     const unauthorized = await workerFetch(webHost, "/api/me");
     expect(unauthorized.status).toBe(401);
+    const publicFrontend = await workerFetch(webHost, "/");
+    expect(publicFrontend.status).toBe(200);
+    expect(await publicFrontend.text()).toBe("public frontend assets");
+    const unauthorizedLogin = await workerFetch(webHost, "/api/session/login");
+    expect(unauthorizedLogin.status).toBe(401);
 
     const wrongIssuer = await signAccess(userA, { iss: "https://attacker.integration.test" });
     const issuerResponse = await workerFetch(webHost, "/api/me", { headers: { "Cf-Access-Jwt-Assertion": wrongIssuer } });
@@ -272,6 +277,12 @@ describe("Cloudflare Worker with real local FastAPI and MCP services", () => {
     expect(bootstrapA.status).toBe(200);
     const provisionedA = await bootstrapA.json() as { user: { id: string; email: string }; workspace: { id: string } };
     expect(provisionedA.user.email).toBe(userA.email);
+    const loginRedirect = await workerFetch(webHost, "/api/session/login", {
+      headers: await accessHeaders(userA),
+    });
+    expect(loginRedirect.status).toBe(302);
+    expect(loginRedirect.headers.get("Location")).toBe("/");
+    expect(loginRedirect.headers.get("Cache-Control")).toBe("no-store");
     const duplicateBootstrapA = await workerFetch(webHost, "/api/session/bootstrap", {
       method: "POST", headers: await accessHeaders(userA),
     });

@@ -87,7 +87,8 @@ jobs:
             echo "$url: HTTP $status (expected $expected)"
             test "$status" = "$expected"
           }
+          probe 'https://tasklutein.xswt.fyi/' 200
           probe 'https://tasklutein.xswt.fyi/api/health' 200
-          probe 'https://tasklutein.xswt.fyi/api/tasks' 401
+          probe 'https://tasklutein.xswt.fyi/api/tasks' 302
           probe 'https://origin-tasklutein.xswt.fyi/api/health' 403
           echo "Production Worker verified; Tencent Docker was not modified."

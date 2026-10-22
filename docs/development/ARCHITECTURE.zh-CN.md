@@ -28,7 +28,7 @@ flowchart LR
 
 Web 与 MCP 使用不同的 Worker hostname。Web hostname 将 `/api` 和 `/api/*` 转发到 API，其他路径交给静态 Assets，并拒绝 `/mcp` 路径。MCP hostname 只接受精确的 `/mcp`，其他路径返回 `404`。Worker 从可信运行环境读取源站 URL 和网关密钥；它覆盖客户端提供的 `X-Tasklutein-Gateway`，剥除客户端伪造的内部身份 Header，并拒绝源站 3xx 重定向。
 
-网页用户通过 Cloudflare Access 验证。Worker 使用配置的 Access issuer、audience 和公开 JWKS 验证 `Cf-Access-Jwt-Assertion` 的 RS256 签名及 `iss`、`aud`、`exp`、`sub` 声明，并要求有效的 `email`。Worker 将验证后的 issuer、subject 和 email 作为内部 Header 发送给 FastAPI。FastAPI 仅在源站网关密钥通过验证后接受这些 Header；客户端直接提供的同名 Header 会先被 Worker 删除并覆盖。浏览器不使用业务 Bearer Token。`GET /api/health` 是无需用户身份的健康检查。
+Web 静态前端可公开访问；游客只看到不可操作的界面预览，不会请求工作区数据。`/api/*` 由 Cloudflare Access 保护，网页用户通过 One-time PIN 验证。Worker 使用配置的 Access issuer、audience 和公开 JWKS 验证 `Cf-Access-Jwt-Assertion` 的 RS256 签名及 `iss`、`aud`、`exp`、`sub` 声明，并要求有效的 `email`。Worker 将验证后的 issuer、subject 和 email 作为内部 Header 发送给 FastAPI。FastAPI 仅在源站网关密钥通过验证后接受这些 Header；客户端直接提供的同名 Header 会先被 Worker 删除并覆盖。浏览器不使用业务 Bearer Token。已登录会话通过 `POST /api/session/bootstrap` 建立或读取个人工作区；`GET /api/session/login` 是由 Access 保护的登录入口，验证完成后将浏览器送回首页。更具体的 `/api/health` Access 应用允许无需用户身份的健康检查。
 
 FastAPI 以 Access issuer 与 subject 识别用户，并为首次访问的用户建立一个个人工作区。任务、汇报、Overview 统计、最近活动和 Agent 密钥都按工作区筛选；跨工作区访问任务按不存在处理。报告来源、用户归属及 Agent 密钥归属由已验证身份写入，不读取客户端提交的归属字段。访问同一 Access 身份的 email 更新时会同步到用户记录。
 

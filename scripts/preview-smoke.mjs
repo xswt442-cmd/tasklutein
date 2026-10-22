@@ -11,7 +11,31 @@ if ([previewWebUrl, previewMcpUrl, originUrl].some((url) => url.protocol !== "ht
   throw new Error("Preview smoke endpoints must be HTTPS base URLs without a path");
 }
 
-const checks = accessCookie ? [
+const checks = [
+  {
+    name: "Public Preview frontend",
+    url: previewWebUrl,
+    method: "GET",
+    expectedStatuses: [200],
+    expectedBody: () => true,
+  },
+  {
+    name: "Public Preview API health",
+    url: new URL("/api/health", previewWebUrl),
+    method: "GET",
+    expectedStatuses: [200],
+    expectedBody: (body) => body?.status === "ok",
+  },
+  {
+    name: "Preview Web host blocks unauthenticated API access",
+    url: new URL("/api/tasks", previewWebUrl),
+    method: "GET",
+    expectedStatuses: [302, 401, 403],
+    expectedBody: () => true,
+  },
+];
+
+if (accessCookie) checks.push(
   {
     name: "Authenticated Preview API health",
     url: new URL("/api/health", previewWebUrl),
@@ -28,15 +52,7 @@ const checks = accessCookie ? [
     expectedBody: (body) => body?.code === "path_not_allowed",
     headers: { Cookie: accessCookie },
   },
-] : [
-  {
-    name: "Preview Web host blocks unauthenticated API access",
-    url: new URL("/api/tasks", previewWebUrl),
-    method: "GET",
-    expectedStatuses: [302, 401, 403],
-    expectedBody: () => true,
-  },
-];
+);
 
 checks.push(
   {

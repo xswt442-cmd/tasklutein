@@ -1,7 +1,8 @@
 /**
  * Cloudflare Worker: the only public app entrypoint.
- * Web requests are authenticated by Cloudflare Access; MCP requests use personal
- * Agent Bearer keys and are restricted to the dedicated MCP hostname.
+ * Web API requests are authenticated by Cloudflare Access; static Web assets are
+ * public. MCP requests use personal Agent Bearer keys and are restricted to the
+ * dedicated MCP hostname.
  */
 import { createRemoteJWKSet, jwtVerify, type JWTVerifyGetKey } from "jose";
 
@@ -159,6 +160,13 @@ export async function proxyGateway(
   const isHealth = isWeb && incoming.pathname === "/api/health";
   const identity = isWeb && !isHealth ? await verifiedAccessIdentity(request, env, resolveAccessKey) : undefined;
   if (isWeb && !isHealth && !identity) return gatewayError("unauthorized", 401, requestId);
+  if (isWeb && incoming.pathname === "/api/session/login") {
+    if (request.method !== "GET") return gatewayError("method_not_allowed", 405, requestId);
+    return new Response(null, {
+      status: 302,
+      headers: { Location: "/", "Cache-Control": "no-store", "X-Request-ID": requestId },
+    });
+  }
   if (isMcp && !/^Bearer \S+$/.test(request.headers.get("Authorization") ?? "")) {
     return gatewayError("unauthorized", 401, requestId);
   }

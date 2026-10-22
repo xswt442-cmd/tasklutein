@@ -224,10 +224,25 @@ describe("Tasklutein browser workflow over the real FastAPI HTTP API", () => {
     expect(tasks.tasks[0]).toMatchObject({ title, status: "in_progress" });
 
     expect(browserRequests.some(({ url }) => url.endsWith("/api/session/bootstrap"))).toBe(true);
-    expect(browserRequests.some(({ url }) => url.endsWith("/api/me"))).toBe(true);
+    expect(browserRequests.some(({ url }) => url.endsWith("/api/me"))).toBe(false);
     expect(browserRequests.every(({ headers }) => !headers.has("Authorization"))).toBe(true);
     expect(window.localStorage.length).toBe(0);
     expect(window.sessionStorage.length).toBe(0);
+  });
+
+  it("shows a public guest preview without loading workspace data or running business operations", async () => {
+    const guestFetch = vi.fn().mockResolvedValue({ type: "opaqueredirect", status: 0, ok: false } as Response);
+    vi.stubGlobal("fetch", guestFetch);
+    render(createElement(App));
+
+    await screen.findByText("游客模式");
+    expect(screen.getByRole("heading", { name: "任务与工作汇报" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "登录" }).getAttribute("href")).toBe("/api/session/login");
+    expect(screen.getAllByText("任务").length).toBeGreaterThan(0);
+    expect(screen.queryByRole("link", { name: "任务" })).toBeNull();
+    expect(guestFetch).toHaveBeenCalledTimes(1);
+    expect(guestFetch.mock.calls[0]?.[0]).toBe("/api/session/bootstrap");
+    expect(guestFetch.mock.calls[0]?.[1]).toMatchObject({ method: "POST", redirect: "manual" });
   });
 
   it("archives a task through the UI and reads its complete report history from the real API", async () => {

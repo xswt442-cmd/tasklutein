@@ -25,6 +25,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .metric-value { margin-top: .2rem; color: #203e30; font-size: 1.75rem; font-weight: 700; font-variant-numeric: tabular-nums; }
 .quiet-link { display: inline-flex; min-height: 44px; align-items: center; gap: .35rem; border-radius: .6rem; padding: .5rem .65rem; color: #39724e; font-size: .8rem; font-weight: 600; }
 .quiet-link:hover { background: #f1f6ee; }
+.guest-nav-item { display: inline-flex; min-height: 44px; flex: 0 0 auto; align-items: center; gap: .5rem; border-radius: .75rem; padding: .5rem .75rem; color: #91a095; font-size: .875rem; font-weight: 500; }
 .task-list-row { display: flex; min-height: 64px; align-items: center; gap: .6rem; padding: .8rem .2rem; }
 .task-list-row:hover > span:first-child span:first-child { color: #13724d; }
 .task-list-row:focus-visible, .quiet-link:focus-visible { outline: 2px solid #078064; outline-offset: 2px; }
