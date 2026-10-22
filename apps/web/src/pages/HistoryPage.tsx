@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import { api } from "../api";
-import type { Activity, ActivityEventType, ActivityPage, ActivitySource, ArchivedTask, ArchivedTaskPage, ReportPage, TaskStatus } from "../api";
+import type { Activity, ActivityEventType, ActivityPage, ActivitySource, ArchivedTask, ArchivedTaskPage, ReportCommentPage, ReportPage, TaskStatus } from "../api";
 import { ApiFeedback } from "../components/ApiFeedback";
 
 const statusLabels: Record<TaskStatus, string> = {
@@ -38,6 +38,39 @@ function formatDate(value: string) {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+function ArchivedReportComments({ reportId }: { reportId: string }) {
+  const [expanded, setExpanded] = useState(false);
+  return <div className="mt-4 border-t border-[#edf1ea] pt-3">
+    <button type="button" className="quiet-link" aria-expanded={expanded} aria-controls={`archived-report-comments-${reportId}`} onClick={() => setExpanded((open) => !open)}>
+      {expanded ? "收起评论" : "查看评论"}
+    </button>
+    <div id={`archived-report-comments-${reportId}`} hidden={!expanded}>{expanded && <ArchivedCommentList reportId={reportId} />}</div>
+  </div>;
+}
+
+function ArchivedCommentList({ reportId }: { reportId: string }) {
+  const [offset, setOffset] = useState(0);
+  const query = useQuery({
+    queryKey: ["report-comments", reportId, 25, offset],
+    queryFn: () => api<ReportCommentPage>(`/reports/${reportId}/comments?limit=25&offset=${offset}`),
+  });
+  return <div>
+    <h4 className="text-xs font-semibold text-[#53675a]">评论</h4>
+    {query.isError && <ApiFeedback error={query.error} onRetry={() => void query.refetch()} />}
+    {query.isPending && <p className="mt-2 text-xs text-[#69776d]">正在加载评论…</p>}
+    {query.data?.comments.length === 0 && <p className="mt-2 text-xs text-[#69776d]">暂无评论。</p>}
+    {query.data?.comments.map((comment) => <div key={comment.id} className="mt-3 rounded-lg bg-[#f8faf5] p-3">
+      <div className="flex flex-wrap gap-2 text-[11px] text-[#718076]"><span>{comment.actor_name || (comment.source === "agent" ? "Agent" : "用户")}</span><time>{formatDate(comment.created_at)}</time></div>
+      <p className="mt-1 whitespace-pre-wrap break-words text-sm text-[#46574c]">{comment.content}</p>
+    </div>)}
+    {query.data && query.data.total > query.data.limit && <div className="mt-2 flex items-center justify-end gap-2 text-xs text-[#66746a]">
+      <span>评论 {offset + 1}–{Math.min(offset + query.data.comments.length, query.data.total)} / {query.data.total}</span>
+      <button type="button" className="icon-btn" aria-label="上一页评论" disabled={offset === 0 || query.isFetching} onClick={() => setOffset(Math.max(0, offset - query.data!.limit))}><ArrowLeft size={14} /></button>
+      <button type="button" className="icon-btn" aria-label="下一页评论" disabled={offset + query.data.limit >= query.data.total || query.isFetching} onClick={() => setOffset(offset + query.data!.limit)}><ArrowRight size={14} /></button>
+    </div>}
+  </div>;
 }
 
 function activitySummary(activity: Activity) {
@@ -284,6 +317,7 @@ export function HistoryPage() {
               <time className="text-xs text-[#718076]">{formatDate(report.created_at)}</time>
             </div>
             <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-[#46574c]">{report.content}</p>
+            <ArchivedReportComments reportId={report.id} />
           </article>)}
         </div>}
         {reportData && reportData.total > reportData.limit && <div className="mt-4 flex items-center justify-end gap-3 border-t border-[#edf1ea] pt-4">

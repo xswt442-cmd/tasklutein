@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import { api } from "../api";
-import type { ReportPage, Task, TaskStatus } from "../api";
+import type { ReportCommentPage, ReportPage, Task, TaskStatus } from "../api";
 import { ApiFeedback } from "../components/ApiFeedback";
 
 const statusLabels: Record<TaskStatus, string> = {
@@ -21,6 +21,56 @@ function formatDate(value: string) {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+function ReportComments({ reportId }: { reportId: string }) {
+  const [expanded, setExpanded] = useState(false);
+  return <div className="mt-4 border-t border-[#edf1ea] pt-3">
+    <button type="button" className="quiet-link" aria-expanded={expanded} aria-controls={`report-comments-${reportId}`} onClick={() => setExpanded((open) => !open)}>
+      {expanded ? "收起评论" : "查看评论"}
+    </button>
+    <div id={`report-comments-${reportId}`} hidden={!expanded}>{expanded && <CurrentReportComments reportId={reportId} />}</div>
+  </div>;
+}
+
+function CurrentReportComments({ reportId }: { reportId: string }) {
+  const queryClient = useQueryClient();
+  const [offset, setOffset] = useState(0);
+  const [draft, setDraft] = useState("");
+  const commentsQuery = useQuery({
+    queryKey: ["report-comments", reportId, 25, offset],
+    queryFn: () => api<ReportCommentPage>(`/reports/${reportId}/comments?limit=25&offset=${offset}`),
+  });
+  const createComment = useMutation({
+    mutationFn: () => api(`/reports/${reportId}/comments`, { method: "POST", body: JSON.stringify({ content: draft.trim() }) }),
+    onSuccess: async () => { setDraft(""); setOffset(0); await queryClient.invalidateQueries({ queryKey: ["report-comments", reportId] }); },
+  });
+  const deleteComment = useMutation({
+    mutationFn: (commentId: string) => api<void>(`/reports/${reportId}/comments/${commentId}`, { method: "DELETE" }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["report-comments", reportId] }),
+  });
+  function submit(event: FormEvent) { event.preventDefault(); if (draft.trim() && !createComment.isPending) createComment.mutate(); }
+  return <div>
+    <h4 className="text-xs font-semibold text-[#53675a]">评论</h4>
+    <form onSubmit={submit} className="mt-2 flex flex-col gap-2 sm:flex-row">
+      <label className="sr-only" htmlFor={`comment-${reportId}`}>添加评论</label>
+      <input id={`comment-${reportId}`} className="input min-w-0 flex-1" maxLength={2000} value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="添加评论…" />
+      <button className="secondary-btn" type="submit" disabled={!draft.trim() || createComment.isPending}>{createComment.isPending ? "正在提交…" : "评论"}</button>
+    </form>
+    {createComment.isError && <ApiFeedback error={createComment.error} />}
+    {commentsQuery.isError && <ApiFeedback error={commentsQuery.error} onRetry={() => void commentsQuery.refetch()} />}
+    {commentsQuery.isPending && <p className="mt-2 text-xs text-[#69776d]">正在加载评论…</p>}
+    {commentsQuery.data?.comments.map((comment) => <div key={comment.id} className="mt-3 flex items-start justify-between gap-3 rounded-lg bg-[#f8faf5] p-3">
+      <div className="min-w-0"><div className="flex flex-wrap gap-2 text-[11px] text-[#718076]"><span>{comment.actor_name || (comment.source === "agent" ? "Agent" : "用户")}</span><time>{formatDate(comment.created_at)}</time></div><p className="mt-1 whitespace-pre-wrap break-words text-sm text-[#46574c]">{comment.content}</p></div>
+      <button type="button" className="quiet-link shrink-0" disabled={deleteComment.isPending} onClick={() => { if (window.confirm("删除这条评论？")) deleteComment.mutate(comment.id); }}>删除</button>
+    </div>)}
+    {deleteComment.isError && <ApiFeedback error={deleteComment.error} />}
+    {commentsQuery.data && commentsQuery.data.total > commentsQuery.data.limit && <div className="mt-2 flex items-center justify-end gap-2 text-xs text-[#66746a]">
+      <span>评论 {offset + 1}–{Math.min(offset + commentsQuery.data.comments.length, commentsQuery.data.total)} / {commentsQuery.data.total}</span>
+      <button type="button" className="icon-btn" aria-label="上一页评论" disabled={offset === 0 || commentsQuery.isFetching} onClick={() => setOffset(Math.max(0, offset - commentsQuery.data!.limit))}><ArrowLeft size={14} /></button>
+      <button type="button" className="icon-btn" aria-label="下一页评论" disabled={offset + commentsQuery.data.limit >= commentsQuery.data.total || commentsQuery.isFetching} onClick={() => setOffset(offset + commentsQuery.data!.limit)}><ArrowRight size={14} /></button>
+    </div>}
+  </div>;
 }
 
 export function TaskDetailPage() {
@@ -250,6 +300,7 @@ export function TaskDetailPage() {
             <time className="text-xs text-[#718076]">{formatDate(report.created_at)}</time>
           </div>
           <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-[#46574c]">{report.content}</p>
+          <ReportComments reportId={report.id} />
         </article>)}
       </div>}
 
