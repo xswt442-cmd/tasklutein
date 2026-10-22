@@ -28,6 +28,8 @@ const marker = randomUUID();
 const title = "[smoke-test] Tasklutein Preview E2E " + marker;
 const userReport = "[smoke-test] Web report " + marker;
 const agentReport = "[smoke-test] MCP Agent report " + marker;
+const userComment = "[smoke-test] Web report comment " + marker;
+const agentComment = "[smoke-test] MCP Agent report comment " + marker;
 
 function safeErrorDetail(error) {
   if (!(error instanceof Error)) return "request failed";
@@ -83,6 +85,13 @@ try {
   stage = "create user report";
   const userResult = await webApiRequest("POST", "/api/tasks/" + taskId + "/reports", { content: userReport }, 201);
   if (userResult.report.source !== "user") throw new Error("user report attribution mismatch");
+  const reportId = userResult.report.id;
+
+  stage = "create Web report comment";
+  const userCommentResult = await webApiRequest(
+    "POST", "/api/reports/" + reportId + "/comments", { content: userComment }, 201,
+  );
+  if (userCommentResult.comment.source !== "user") throw new Error("user comment attribution mismatch");
 
   stage = "connect to remote Preview MCP";
   client = new Client({ name: "tasklutein-preview-e2e", version: "1.0.0" });
@@ -93,7 +102,10 @@ try {
 
   stage = "list MCP tools";
   const toolNames = (await client.listTools()).tools.map((tool) => tool.name);
-  for (const required of ["add_report", "create_task", "get_task", "list_reports", "list_tasks", "update_task"]) {
+  for (const required of [
+    "add_report", "add_report_comment", "create_task", "get_task", "list_report_comments",
+    "list_reports", "list_tasks", "update_task",
+  ]) {
     if (!toolNames.includes(required)) throw new Error("required tool missing");
   }
 
@@ -116,11 +128,37 @@ try {
     !JSON.parse(reportPageText).reports.some((report) => report.source === "agent" && report.content === agentReport)
   ) throw new Error("MCP report page mismatch");
 
+  stage = "create Agent report comment";
+  const agentCommentResult = await client.callTool({
+    name: "add_report_comment", arguments: { report_id: reportId, content: agentComment },
+  });
+  if (agentCommentResult.isError) throw new Error("MCP comment call failed");
+
+  stage = "read report comments through MCP";
+  const commentPage = await client.callTool({
+    name: "list_report_comments", arguments: { report_id: reportId, limit: 25, offset: 0 },
+  });
+  const commentPageText = commentPage.content.find((item) => item.type === "text")?.text;
+  if (commentPage.isError || !commentPageText) throw new Error("MCP comment listing failed");
+  const agentComments = JSON.parse(commentPageText).comments;
+  if (!agentComments.some((comment) => comment.source === "agent" && comment.content === agentComment)) {
+    throw new Error("Agent comment readback or attribution mismatch");
+  }
+
   stage = "read both reports through the Web API";
   const reports = (await webApiRequest("GET", "/api/tasks/" + taskId + "/reports", undefined, 200)).reports;
   const hasUser = reports.some((report) => report.source === "user" && report.content === userReport);
   const hasAgent = reports.some((report) => report.source === "agent" && report.content === agentReport);
   if (!hasUser || !hasAgent) throw new Error("report readback or attribution mismatch");
+
+  stage = "read report comments through the Web API";
+  const comments = (await webApiRequest(
+    "GET", "/api/reports/" + reportId + "/comments?limit=25&offset=0", undefined, 200,
+  )).comments;
+  if (
+    !comments.some((comment) => comment.source === "user" && comment.content === userComment) ||
+    !comments.some((comment) => comment.source === "agent" && comment.content === agentComment)
+  ) throw new Error("Web comment readback or attribution mismatch");
 } catch (error) {
   console.error("FAIL Preview API/MCP E2E at stage: " + stage + " (" + safeErrorDetail(error) + ")");
   failed = true;
@@ -149,4 +187,4 @@ try {
 }
 
 if (failed) process.exitCode = 1;
-else console.log("PASS Preview API/MCP E2E: Access identity, Web CRUD/read-after-write, MCP task/report tools, report sources, and tagged-task cleanup.");
+else console.log("PASS Preview API/MCP E2E: Access identity, Web CRUD/read-after-write, MCP task/report/comment tools, attribution, and tagged-task cleanup.");
