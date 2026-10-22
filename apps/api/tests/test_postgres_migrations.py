@@ -47,7 +47,10 @@ if (
 
 def _drop_test_schema(engine) -> None:
     with engine.begin() as connection:
-        for table in ("activities", "reports", "agent_tokens", "tasks", "workspaces", "users", "alembic_version"):
+        for table in (
+            "activities", "report_comments", "reports", "agent_tokens", "tasks", "workspaces", "users",
+            "alembic_version",
+        ):
             connection.execute(text(f"DROP TABLE IF EXISTS {table} CASCADE"))
 
 
@@ -292,13 +295,47 @@ def test_concurrent_first_login_creates_one_user_and_workspace(postgres_database
     assert workspaces == 1
 
 
-def test_migration_refuses_downgrade_from_task_history_schema(postgres_database: str):
+def test_migration_refuses_downgrade_from_report_comment_schema(postgres_database: str):
     command.upgrade(alembic_config(), "head")
-    with pytest.raises(RuntimeError, match="Task history cannot be removed"):
+    with pytest.raises(RuntimeError, match="Report comments cannot be removed"):
         command.downgrade(alembic_config(), "0001_baseline")
     with create_engine(postgres_database).connect() as connection:
         revision = connection.scalar(text("SELECT version_num FROM alembic_version"))
-    assert revision == "0004_task_history"
+    assert revision == "0005_report_comments"
+
+
+def test_report_comments_migration_keeps_existing_reports_and_indexes(postgres_database: str):
+    command.upgrade(alembic_config(), "0004_task_history")
+    with TestClient(app) as client:
+        headers, _identity = _new_identity(client, "comment-migration")
+        task = _create_task(client, headers)
+        report = _create_report(client, headers, task["id"])
+
+    command.upgrade(alembic_config(), "head")
+    with create_engine(postgres_database).connect() as connection:
+        revision = connection.scalar(text("SELECT version_num FROM alembic_version"))
+        preserved = connection.execute(
+            text("SELECT id, content FROM reports WHERE id = :report_id"),
+            {"report_id": report["id"]},
+        ).one()
+        comments = inspect(connection)
+        report_fk = next(
+            foreign_key
+            for foreign_key in comments.get_foreign_keys("report_comments")
+            if foreign_key["constrained_columns"] == ["report_id"]
+        )
+        indexes = comments.get_indexes("report_comments")
+
+    assert revision == "0005_report_comments"
+    assert (str(preserved.id), preserved.content) == (report["id"], report["content"])
+    assert report_fk["referred_table"] == "reports"
+    assert report_fk["options"]["ondelete"] == "CASCADE"
+    assert any(
+        index["name"] == "idx_report_comments_report_created"
+        and index["column_names"] == ["report_id", "created_at", "id"]
+        for index in indexes
+    )
+    command.check(alembic_config())
 
 
 def test_postgres_ready_has_bounded_connection_and_query_timeouts(postgres_database: str):
@@ -906,3 +943,193 @@ def test_postgres_concurrent_report_and_current_history_cleanup_leave_no_orphans
         )
     assert orphan_reports == 0
     assert orphan_activities == 0
+
+
+def test_postgres_report_comments_keep_principal_scope_and_cascade_with_reports(postgres_database: str):
+    command.upgrade(alembic_config(), "head")
+    with TestClient(app) as client:
+        owner_headers, owner = _new_identity(client, "report-comments-owner")
+        outsider_headers, _outsider = _new_identity(client, "report-comments-outsider")
+        task = _create_task(client, owner_headers)
+        report = _create_report(client, owner_headers, task["id"])
+        comments_url = f"/api/reports/{report['id']}/comments"
+        user_comment = client.post(comments_url, headers=owner_headers, json={"content": "Human review"})
+        assert user_comment.status_code == 201, user_comment.text
+        agent_secret, agent_id = issue_agent_key(client, owner_headers, "Postgres comments Agent")
+        agent_comment = client.post(
+            comments_url, headers=agent_headers(agent_secret), json={"content": "Agent review"}
+        )
+        assert agent_comment.status_code == 201, agent_comment.text
+        agent_comment_id = agent_comment.json()["comment"]["id"]
+
+        assert client.get(comments_url, headers=outsider_headers).status_code == 404
+        assert client.post(comments_url, headers=outsider_headers, json={"content": "No access"}).status_code == 404
+        assert client.delete(f"{comments_url}/{agent_comment_id}", headers=outsider_headers).status_code == 404
+        assert client.delete(f"{comments_url}/{agent_comment_id}", headers=agent_headers(agent_secret)).status_code == 403
+
+        archived = client.delete(f"/api/tasks/{task['id']}", headers=owner_headers, params={"history": "keep"})
+        assert archived.status_code == 204, archived.text
+        archived_comments = client.get(comments_url, headers=owner_headers)
+        assert archived_comments.status_code == 200, archived_comments.text
+        assert archived_comments.json()["total"] == 2
+        assert client.post(comments_url, headers=owner_headers, json={"content": "Archived"}).status_code == 404
+        assert client.delete(f"{comments_url}/{agent_comment_id}", headers=owner_headers).status_code == 404
+
+        current = _create_task(client, owner_headers)
+        current_report = _create_report(client, owner_headers, current["id"])
+        current_comment = client.post(
+            f"/api/reports/{current_report['id']}/comments",
+            headers=owner_headers,
+            json={"content": "Clear with current history"},
+        )
+        assert current_comment.status_code == 201, current_comment.text
+        assert client.delete(f"/api/history/tasks/{current['id']}", headers=owner_headers).status_code == 204
+
+        physical = _create_task(client, owner_headers)
+        physical_report = _create_report(client, owner_headers, physical["id"])
+        physical_comment = client.post(
+            f"/api/reports/{physical_report['id']}/comments",
+            headers=owner_headers,
+            json={"content": "Delete with task"},
+        )
+        assert physical_comment.status_code == 201, physical_comment.text
+        assert client.delete(
+            f"/api/tasks/{physical['id']}", headers=owner_headers, params={"history": "delete"}
+        ).status_code == 204
+
+    with create_engine(postgres_database).connect() as connection:
+        persisted = connection.execute(
+            text(
+                "SELECT source, actor_user_id, agent_token_id FROM report_comments WHERE id = :id"
+            ),
+            {"id": agent_comment_id},
+        ).one()
+        archived_task_id = task["id"]
+        remaining_archived = connection.scalar(
+            text("SELECT count(*) FROM report_comments WHERE report_id = :report_id"),
+            {"report_id": report["id"]},
+        )
+        current_remaining = connection.scalar(
+            text("SELECT count(*) FROM report_comments WHERE report_id = :report_id"),
+            {"report_id": current_report["id"]},
+        )
+        physical_remaining = connection.scalar(
+            text("SELECT count(*) FROM report_comments WHERE report_id = :report_id"),
+            {"report_id": physical_report["id"]},
+        )
+        orphan_comments = connection.scalar(
+            text(
+                "SELECT count(*) FROM report_comments c LEFT JOIN reports r ON r.id = c.report_id "
+                "WHERE r.id IS NULL"
+            )
+        )
+    assert persisted.source == "agent"
+    assert str(persisted.actor_user_id) == owner["user"]["id"]
+    assert str(persisted.agent_token_id) == agent_id
+    assert remaining_archived == 2
+    assert current_remaining == 0
+    assert physical_remaining == 0
+    assert orphan_comments == 0
+    with TestClient(app) as client:
+        assert client.delete(f"/api/history/tasks/{archived_task_id}", headers=owner_headers).status_code == 204
+    with create_engine(postgres_database).connect() as connection:
+        assert connection.scalar(text("SELECT count(*) FROM report_comments")) == 0
+
+
+def test_postgres_concurrent_report_comment_and_archive_leave_consistent_history(postgres_database: str):
+    command.upgrade(alembic_config(), "head")
+    with TestClient(app) as client:
+        headers, _identity = _new_identity(client, "report-comment-archive-race")
+        task = _create_task(client, headers)
+        report = _create_report(client, headers, task["id"])
+
+    barrier = threading.Barrier(2)
+
+    def add_comment():
+        with TestClient(app) as client:
+            barrier.wait(timeout=10)
+            return client.post(
+                f"/api/reports/{report['id']}/comments",
+                headers=headers,
+                json={"content": f"Comment racing archive {uuid4().hex}"},
+            )
+
+    def archive_task():
+        with TestClient(app) as client:
+            barrier.wait(timeout=10)
+            return client.delete(f"/api/tasks/{task['id']}", headers=headers, params={"history": "keep"})
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        comment_future = executor.submit(add_comment)
+        archive_future = executor.submit(archive_task)
+        comment_response = comment_future.result(timeout=30)
+        archive_response = archive_future.result(timeout=30)
+
+    assert comment_response.status_code in {201, 404}, comment_response.text
+    assert archive_response.status_code == 204, archive_response.text
+    with TestClient(app) as client:
+        comments = client.get(f"/api/reports/{report['id']}/comments", headers=headers)
+        assert comments.status_code == 200, comments.text
+        assert comments.json()["total"] == (1 if comment_response.status_code == 201 else 0)
+    with create_engine(postgres_database).connect() as connection:
+        orphan_comments = connection.scalar(
+            text(
+                "SELECT count(*) FROM report_comments c LEFT JOIN reports r ON r.id = c.report_id "
+                "WHERE r.id IS NULL"
+            )
+        )
+        task_is_archived = connection.scalar(
+            text("SELECT archived_at IS NOT NULL FROM tasks WHERE id = :task_id"),
+            {"task_id": task["id"]},
+        )
+    assert orphan_comments == 0
+    assert task_is_archived is True
+
+
+def test_postgres_concurrent_report_comment_and_current_history_cleanup_leave_no_orphans(postgres_database: str):
+    command.upgrade(alembic_config(), "head")
+    with TestClient(app) as client:
+        headers, _identity = _new_identity(client, "report-comment-cleanup-race")
+        task = _create_task(client, headers)
+        report = _create_report(client, headers, task["id"])
+
+    barrier = threading.Barrier(2)
+
+    def add_comment():
+        with TestClient(app) as client:
+            barrier.wait(timeout=10)
+            return client.post(
+                f"/api/reports/{report['id']}/comments",
+                headers=headers,
+                json={"content": f"Comment racing cleanup {uuid4().hex}"},
+            )
+
+    def clear_history():
+        with TestClient(app) as client:
+            barrier.wait(timeout=10)
+            return client.delete(f"/api/history/tasks/{task['id']}", headers=headers)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        comment_future = executor.submit(add_comment)
+        cleanup_future = executor.submit(clear_history)
+        comment_response = comment_future.result(timeout=30)
+        cleanup_response = cleanup_future.result(timeout=30)
+
+    assert comment_response.status_code in {201, 404}, comment_response.text
+    assert cleanup_response.status_code == 204, cleanup_response.text
+    with TestClient(app) as client:
+        assert client.get(f"/api/tasks/{task['id']}", headers=headers).status_code == 200
+        assert client.get(f"/api/reports/{report['id']}/comments", headers=headers).status_code == 404
+    with create_engine(postgres_database).connect() as connection:
+        orphan_comments = connection.scalar(
+            text(
+                "SELECT count(*) FROM report_comments c LEFT JOIN reports r ON r.id = c.report_id "
+                "WHERE r.id IS NULL"
+            )
+        )
+        comment_count = connection.scalar(text("SELECT count(*) FROM report_comments"))
+        report_count = connection.scalar(text("SELECT count(*) FROM reports WHERE task_id = :task_id"),
+                                         {"task_id": task["id"]})
+    assert orphan_comments == 0
+    assert comment_count == 0
+    assert report_count == 0

@@ -3,7 +3,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from app.main import app, logger
-from app.models import Activity, AgentToken, Report, User
+from app.models import Activity, AgentToken, Report, ReportComment, User
 from conftest import agent_headers, gateway_headers, issue_agent_key, user_headers
 from fastapi.testclient import TestClient
 from sqlalchemy import select
@@ -569,6 +569,128 @@ def test_archiving_keeps_a_read_only_task_and_complete_report_snapshot(client: T
     assert client.get(f"/api/history/tasks/{task_id}", headers=user_headers()).status_code == 404
     assert client.get(f"/api/history/tasks/{task_id}/reports", headers=user_headers()).status_code == 404
     assert client.get("/api/activity", headers=user_headers(), params={"task_id": task_id}).json()["total"] == 0
+
+
+def test_report_comments_are_workspace_scoped_paginated_and_attributed(client: TestClient):
+    task = client.post("/api/tasks", headers=user_headers(), json={"title": "Report comments"}).json()["task"]
+    report = client.post(
+        f"/api/tasks/{task['id']}/reports", headers=user_headers(), json={"content": "Implementation progress"}
+    ).json()["report"]
+    agent_name = "Commenting Agent"
+    agent_token = client.post("/api/agent-tokens", headers=user_headers(), json={"name": agent_name})
+    assert agent_token.status_code == 201, agent_token.text
+    agent_secret = agent_token.json()["secret"]
+    agent_token_id = agent_token.json()["token"]["id"]
+    agent = agent_headers(agent_secret)
+    comments_url = f"/api/reports/{report['id']}/comments"
+
+    agent_comment = client.post(comments_url, headers=agent, json={"content": "I verified the API path."})
+    user_comment = client.post(comments_url, headers=user_headers(), json={"content": "Thanks, I reviewed it."})
+    assert agent_comment.status_code == 201, agent_comment.text
+    assert user_comment.status_code == 201, user_comment.text
+    assert agent_comment.json()["comment"] == {
+        "id": agent_comment.json()["comment"]["id"],
+        "report_id": report["id"],
+        "content": "I verified the API path.",
+        "source": "agent",
+        "actor_name": agent_name,
+        "created_at": agent_comment.json()["comment"]["created_at"],
+    }
+    assert user_comment.json()["comment"]["source"] == "user"
+    assert user_comment.json()["comment"]["actor_name"] == "local-test@example.test"
+
+    first_page = client.get(comments_url, headers=user_headers(), params={"limit": 1, "offset": 0})
+    second_page = client.get(comments_url, headers=agent, params={"limit": 1, "offset": 1})
+    assert first_page.status_code == second_page.status_code == 200
+    assert first_page.json()["total"] == second_page.json()["total"] == 2
+    assert first_page.json()["comments"][0]["id"] == agent_comment.json()["comment"]["id"]
+    assert second_page.json()["comments"][0]["id"] == user_comment.json()["comment"]["id"]
+    assert first_page.json()["comments"][0]["created_at"] <= second_page.json()["comments"][0]["created_at"]
+
+    task_after_comments = client.get(f"/api/tasks/{task['id']}", headers=user_headers()).json()["task"]
+    assert task_after_comments["updated_at"] == task["updated_at"]
+    events = client.get("/api/activity", headers=user_headers(), params={"task_id": task["id"]}).json()
+    assert events["total"] == 2
+    assert {event["event_type"] for event in events["activities"]} == {"task.created", "report.created"}
+
+    outsider = user_headers(subject="report-comment-outsider", email="report-comment-outsider@example.test")
+    assert client.post("/api/session/bootstrap", headers=outsider).status_code == 200
+    assert client.get(comments_url, headers=outsider).status_code == 404
+    assert client.post(comments_url, headers=outsider, json={"content": "intrusion"}).status_code == 404
+    assert client.delete(
+        f"{comments_url}/{agent_comment.json()['comment']['id']}", headers=outsider
+    ).status_code == 404
+    assert client.delete(
+        f"{comments_url}/{agent_comment.json()['comment']['id']}", headers=agent
+    ).status_code == 403
+    assert client.delete(f"/api/agent-tokens/{agent_token_id}", headers=user_headers()).status_code == 204
+    assert client.post(comments_url, headers=agent, json={"content": "Revoked key"}).status_code == 401
+    assert client.delete(
+        f"{comments_url}/{agent_comment.json()['comment']['id']}", headers=user_headers()
+    ).status_code == 204
+
+    remaining = client.get(comments_url, headers=user_headers())
+    assert remaining.status_code == 200
+    assert remaining.json()["total"] == 1
+    assert remaining.json()["comments"][0]["id"] == user_comment.json()["comment"]["id"]
+
+
+def test_report_comments_validate_content_and_archived_reports_are_read_only(client: TestClient):
+    task = client.post("/api/tasks", headers=user_headers(), json={"title": "Archived comments"}).json()["task"]
+    report = client.post(
+        f"/api/tasks/{task['id']}/reports", headers=user_headers(), json={"content": "Report before archive"}
+    ).json()["report"]
+    comments_url = f"/api/reports/{report['id']}/comments"
+
+    assert client.post(comments_url, headers=user_headers(), json={"content": "  \n "}).status_code == 422
+    assert client.post(comments_url, headers=user_headers(), json={"content": "x" * 2001}).status_code == 422
+    assert client.post(
+        comments_url, headers=user_headers(), json={"content": "comment", "source": "agent"}
+    ).status_code == 422
+    created = client.post(comments_url, headers=user_headers(), json={"content": "Keep with archive"})
+    assert created.status_code == 201, created.text
+
+    archived = client.delete(f"/api/tasks/{task['id']}", headers=user_headers(), params={"history": "keep"})
+    assert archived.status_code == 204
+    listed = client.get(comments_url, headers=user_headers())
+    assert listed.status_code == 200
+    assert listed.json()["comments"][0]["content"] == "Keep with archive"
+    assert client.post(comments_url, headers=user_headers(), json={"content": "too late"}).status_code == 404
+    assert client.delete(
+        f"{comments_url}/{created.json()['comment']['id']}", headers=user_headers()
+    ).status_code == 404
+
+
+def test_report_comments_cascade_with_report_history_cleanup(client: TestClient):
+    current_task = client.post(
+        "/api/tasks", headers=user_headers(), json={"title": "Current comment cleanup"}
+    ).json()["task"]
+    current_report = client.post(
+        f"/api/tasks/{current_task['id']}/reports", headers=user_headers(), json={"content": "Current report"}
+    ).json()["report"]
+    current_comment = client.post(
+        f"/api/reports/{current_report['id']}/comments", headers=user_headers(), json={"content": "Remove on clear"}
+    ).json()["comment"]
+    assert client.delete(f"/api/history/tasks/{current_task['id']}", headers=user_headers()).status_code == 204
+    assert client.get(f"/api/reports/{current_report['id']}/comments", headers=user_headers()).status_code == 404
+
+    archived_task = client.post(
+        "/api/tasks", headers=user_headers(), json={"title": "Archived comment cleanup"}
+    ).json()["task"]
+    archived_report = client.post(
+        f"/api/tasks/{archived_task['id']}/reports", headers=user_headers(), json={"content": "Archived report"}
+    ).json()["report"]
+    archived_comment = client.post(
+        f"/api/reports/{archived_report['id']}/comments", headers=user_headers(), json={"content": "Remove with archive"}
+    ).json()["comment"]
+    assert client.delete(
+        f"/api/tasks/{archived_task['id']}", headers=user_headers(), params={"history": "keep"}
+    ).status_code == 204
+    assert client.delete(f"/api/history/tasks/{archived_task['id']}", headers=user_headers()).status_code == 204
+
+    with client.app.state.test_session_factory() as db:
+        assert db.get(ReportComment, UUID(current_comment["id"])) is None
+        assert db.get(ReportComment, UUID(archived_comment["id"])) is None
 
 
 def test_clearing_current_history_and_physical_delete_have_distinct_effects(client: TestClient):

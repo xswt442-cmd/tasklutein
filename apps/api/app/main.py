@@ -23,6 +23,7 @@ from .routers.activities import router as activity_router
 from .routers.agent_tokens import router as agent_token_router
 from .routers.history import router as history_router
 from .routers.overview import router as overview_router
+from .routers.report_comments import router as report_comment_router
 from .routers.reports import router as report_router
 from .routers.session import router as session_router
 from .routers.tasks import router as task_router
@@ -216,4 +217,5 @@ app.include_router(activity_router)
 app.include_router(history_router)
 app.include_router(task_router)
 app.include_router(report_router)
+app.include_router(report_comment_router)
 app.include_router(overview_router)

@@ -119,6 +119,39 @@ class Report(Base):
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now, server_default=func.now())
     task: Mapped[Task] = relationship(back_populates="reports")
+    comments: Mapped[list["ReportComment"]] = relationship(
+        back_populates="report", cascade="all, delete-orphan", passive_deletes=True
+    )
+
+
+class ReportComment(Base):
+    __tablename__ = "report_comments"
+    __table_args__ = (
+        CheckConstraint("source IN ('user', 'agent')", name="report_comments_source_check"),
+        Index("idx_report_comments_report_created", "report_id", "created_at", "id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    report_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("reports.id", name="fk_report_comments_report_id_reports", ondelete="CASCADE"),
+        nullable=False,
+    )
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    source: Mapped[str] = mapped_column(String(12), nullable=False)
+    actor_user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", name="fk_report_comments_actor_user_id_users", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    agent_token_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("agent_tokens.id", name="fk_report_comments_agent_token_id_agent_tokens", ondelete="RESTRICT"),
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now, server_default=func.now()
+    )
+    report: Mapped[Report] = relationship(back_populates="comments")
 
 
 class Activity(Base):
