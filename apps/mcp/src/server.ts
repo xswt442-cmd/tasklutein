@@ -112,5 +112,29 @@ export function createTaskluteinMcpServer(config: McpApiConfig): McpServer {
   }, async ({ task_id, content }) =>
     result(await callApi("POST", "/tasks/" + task_id + "/reports", { content })));
 
+  server.registerTool("list_report_comments", {
+    description: "List comments on a progress report, optionally paginated.",
+    inputSchema: {
+      report_id: z.string().uuid(),
+      limit: z.number().int().min(1).max(100).optional(),
+      offset: z.number().int().min(0).optional(),
+    },
+  }, async ({ report_id, limit, offset }) => {
+    const params = new URLSearchParams();
+    if (limit !== undefined) params.set("limit", String(limit));
+    if (offset !== undefined) params.set("offset", String(offset));
+    const query = params.size ? "?" + params.toString() : "";
+    return result(await callApi("GET", "/reports/" + report_id + "/comments" + query));
+  });
+
+  server.registerTool("add_report_comment", {
+    description: "Add a comment to a progress report.",
+    inputSchema: {
+      report_id: z.string().uuid(),
+      content: z.string().trim().min(1).max(2000),
+    },
+  }, async ({ report_id, content }) =>
+    result(await callApi("POST", "/reports/" + report_id + "/comments", { content })));
+
   return server;
 }
