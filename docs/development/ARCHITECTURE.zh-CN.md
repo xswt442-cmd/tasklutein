@@ -38,21 +38,23 @@ Worker 和源站分别验证 `ORIGIN_GATEWAY_TOKEN` / `EDGE_GATEWAY_TOKEN`（值
 
 ## 数据库、隔离与旧数据迁移
 
-PostgreSQL 是生产数据源。`apps/api/migrations/0001_init.sql` 为新卷初始化旧版基础表；`apps/api/alembic/` 管理版本化迁移。`0002_identity_workspace` 创建用户、个人工作区和 Agent 密钥表，并为旧任务增加可空的工作区关联及为汇报增加可空的身份归属。`0003_task_workspace_required` 将任务工作区关联设为必填。`0004_task_history` 为任务增加可空的 UTC `archived_at`，并创建按工作区存储活动的表。
+PostgreSQL 是生产数据源。`apps/api/migrations/0001_init.sql` 为新卷初始化旧版基础表；`apps/api/alembic/` 管理版本化迁移。`0002_identity_workspace` 创建用户、个人工作区和 Agent 密钥表，并为旧任务增加可空的工作区关联及为汇报增加可空的身份归属。`0003_task_workspace_required` 将任务工作区关联设为必填。`0004_task_history` 为任务增加可空的 UTC `archived_at`，并创建按工作区存储活动的表。`0005_report_comments` 为报告增加评论表，并通过报告外键级联删除评论。
 
-迁移不会自动运行于 API 启动。升级旧数据库时，先将数据库迁移到 `0002_identity_workspace`，再让目标用户通过 Cloudflare Access 登录，以建立用户与个人工作区。若仍有未归属任务，维护者随后在执行 `0003_task_workspace_required` 时显式设置 `TASKLUTEIN_LEGACY_OWNER_ISSUER`、`TASKLUTEIN_LEGACY_OWNER_SUBJECT`、`TASKLUTEIN_LEGACY_OWNER_EMAIL`，并将 `TASKLUTEIN_LEGACY_TASKS_CONFIRM` 设置为 `assign-existing-tasks`。目标用户必须匹配这三个身份值、未被禁用且已有工作区，否则迁移会失败。迁移将所有未归属任务指派给该单一工作区，再将任务的工作区字段设为非空；不会猜测或拆分原共享数据。已有任务和汇报内容及报告来源会保留。旧报告没有可恢复的用户或密钥归属，其 `actor_user_id` 和 `agent_token_id` 继续为空。随后应用 `0004_task_history`；已有任务的 `archived_at` 保持为空，因此继续作为当前任务，且迁移不补造活动或推断过去的完成时间。若不存在未归属任务，则不需要提供旧数据归属配置。
+迁移不会自动运行于 API 启动。升级旧数据库时，先将数据库迁移到 `0002_identity_workspace`，再让目标用户通过 Cloudflare Access 登录，以建立用户与个人工作区。若仍有未归属任务，维护者随后在执行 `0003_task_workspace_required` 时显式设置 `TASKLUTEIN_LEGACY_OWNER_ISSUER`、`TASKLUTEIN_LEGACY_OWNER_SUBJECT`、`TASKLUTEIN_LEGACY_OWNER_EMAIL`，并将 `TASKLUTEIN_LEGACY_TASKS_CONFIRM` 设置为 `assign-existing-tasks`。目标用户必须匹配这三个身份值、未被禁用且已有工作区，否则迁移会失败。迁移将所有未归属任务指派给该单一工作区，再将任务的工作区字段设为非空；不会猜测或拆分原共享数据。已有任务和汇报内容及报告来源会保留。旧报告没有可恢复的用户或密钥归属，其 `actor_user_id` 和 `agent_token_id` 继续为空。随后依次应用 `0004_task_history` 和 `0005_report_comments`；已有任务的 `archived_at` 保持为空，因此继续作为当前任务，且迁移不补造活动或推断过去的完成时间。若不存在未归属任务，则不需要提供旧数据归属配置。
 
-任务保存标题、说明、状态、时间戳和工作区 ID；汇报通过级联外键关联任务。`archived_at` 为空的任务属于当前列表、搜索、Overview 和现有 MCP 任务工具；所有这些查询都排除归档任务。归档会冻结原任务行，保留任务 ID 和全部字段，并保留所有关联汇报。归档记录及汇报只能通过只读历史接口访问。清理归档任务历史会物理删除任务、汇报和活动；清理仍存在任务的历史只删除其汇报与活动，保留任务状态和字段。
+任务保存标题、说明、状态、时间戳和工作区 ID；汇报通过级联外键关联任务。`archived_at` 为空的任务属于当前列表、搜索、Overview 和现有 MCP 任务工具；所有这些查询都排除归档任务。归档会冻结原任务行，保留任务 ID 和全部字段，并保留所有关联汇报及评论。归档记录、汇报和评论可通过历史读取接口查看；评论在归档后不可新增或删除。清理归档任务历史会物理删除任务、汇报、评论和活动；清理仍存在任务的历史只删除其汇报、评论与活动，保留任务状态和字段。报告或任务被物理删除时，评论随报告级联删除。
 
 FastAPI 在每次实际任务或报告变更的同一数据库事务中写入活动。事件类型包括 `task.created`、`task.updated`、`task.status_changed`、`task.deleted` 和 `report.created`；无变化的任务 PATCH 不更新 `updated_at`，也不产生事件。一次同时修改状态和其他字段的 PATCH 只写一条 `task.status_changed`。活动摘要只记录受控变更字段和状态前后值，不复制任务说明、报告正文或密钥。活动可由用户删除，是业务历史记录，不提供不可篡改的安全审计保证。
 
 任务更新、追加报告、归档和清理整组历史会锁定目标任务并检查归档状态，确保归档后不会再写入报告。任务数据与活动共用事务，活动写入失败会回滚对应业务变更。活动与历史查询仍由 FastAPI 按 M1.5 的 `workspace_id` 和已验证 Principal 限定。报告和活动保留已验证用户或 Agent Key 的 ID 关联；读取时 `actor_name` 从关联记录当前邮箱或名称解析，因此邮箱同步或密钥改名会改变旧记录的显示名称。系统不保存操作发生时的名称快照，旧报告无法恢复的身份保持未知并只显示来源。MCP 仅调用 REST，让网页与 Agent 共用相同的业务规则。
 
+评论是附属于单条报告的平面记录，不构成回复线程。Web 用户和 Agent 密钥都可在各自工作区读取和添加评论；只有 Web 用户可物理删除评论。评论增删不写活动，也不更新任务 `updated_at`。MCP 通过 FastAPI REST 提供 `list_report_comments` 和 `add_report_comment`。
+
 首次真实归档后，忽略 `archived_at` 的旧后端可能把归档任务重新显示在当前列表中。回退版本必须保留归档过滤和工作区隔离；移除历史 schema 需要单独审查，不能通过删除历史记录来回退。
 
 ## MCP 传输与限制
 
-`apps/mcp/src/server.ts` 提供六个工具，包括分页读取任务与汇报；`index.ts` 提供本地 stdio 适配器；`http.ts` 提供远程 Streamable HTTP Server。远程 MCP 使用无状态 HTTP 模式，每个 POST 使用独立传输并返回 JSON，不支持跨请求会话状态、服务端主动通知或事件恢复。HTTP Server 仅接受 POST；请求体上限为 1 MiB。OAuth、动态客户端注册和公共 MCP Registry 发布未实现。客户端需要支持自定义 Authorization 请求头。
+`apps/mcp/src/server.ts` 提供八个工具，包括分页读取任务、汇报和汇报评论；`index.ts` 提供本地 stdio 适配器；`http.ts` 提供远程 Streamable HTTP Server。远程 MCP 使用无状态 HTTP 模式，每个 POST 使用独立传输并返回 JSON，不支持跨请求会话状态、服务端主动通知或事件恢复。HTTP Server 仅接受 POST；请求体上限为 1 MiB。OAuth、动态客户端注册和公共 MCP Registry 发布未实现。客户端需要支持自定义 Authorization 请求头。
 
 Worker 将 HTTP 请求和响应流转发到源站。远程 MCP host 与 Web host 分开；Web host 上的 `/mcp` 不会转发给 MCP Server。MCP 的 GET/SSE 等能力取决于 Server 传输实现；当前无状态服务不提供可恢复的长期 SSE 会话。
 

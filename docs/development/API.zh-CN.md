@@ -63,6 +63,16 @@ Agent 密钥只允许在 MCP 身份验证和 MCP 所调用的 API 中使用。�
 | GET | `/api/tasks/{uuid}/reports` | 分页查询当前工作区任务的汇报 |
 | POST | `/api/tasks/{uuid}/reports` | 追加汇报并返回 `201` |
 
+每条汇报可有独立的平面评论，不支持回复线程。评论接口按报告及其任务的工作区隔离；当前工作区的 Web 用户和 Agent 密钥都可读取和添加评论。请求体为 `{"content":"..."}`，内容去除首尾空白后须为 1–2000 个字符；列表支持 `limit`（1–100，默认 25）和非负 `offset`，按创建时间及 UUID 升序稳定排序，返回 `comments`、`total`、`limit` 和 `offset`。评论响应包含 `id`、`report_id`、`content`、`source`、当前 `actor_name` 及 UTC `created_at`。
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/reports/{report_id}/comments` | 分页读取当前工作区报告的评论；归档报告仍可读取 |
+| POST | `/api/reports/{report_id}/comments` | 添加评论并返回 `201`；归档报告不可写 |
+| DELETE | `/api/reports/{report_id}/comments/{comment_id}` | 物理删除评论；仅 Web 用户可操作，归档报告不可写 |
+
+评论删除不可恢复。物理删除报告、任务或整组历史时，关联评论随报告级联删除。评论的创建和删除不产生活动，也不更改任务 `updated_at`。
+
 请求体仅允许 `{"content":"..."}`。报告 `source`、用户归属和 Agent 密钥归属由 FastAPI 根据已验证身份写入，不接受客户端指定。创建响应的 `actor_name` 使用本次已验证身份的邮箱或 Agent Key 名称；后续读取会根据保存的操作者 ID 解析关联记录的当前邮箱或名称。改名或邮箱同步会改变既有报告的显示名称；系统不保存操作发生时的名称快照。迁移前缺少操作者归属的旧报告返回 `null`，界面只显示 `source`。汇报可接收 `limit`（1–100）与非负 `offset`；省略 `limit` 时最多返回 100 条。结果按 `created_at` 降序、再按 UUID 降序排序，响应包含 `total`、`limit` 和 `offset`。追加报告不会更改任务的 `updated_at`。
 
 ## 历史与活动 REST API
@@ -105,4 +115,4 @@ API 声明请求体超过 64 KiB 时返回 `413`；MCP 使用独立的 1 MiB 请
 
 ## 数据库升级兼容性
 
-迁移不会随 API 启动自动执行。旧库升级时，先应用 `0002_identity_workspace`，让目标用户通过 Cloudflare Access 登录并建立个人工作区，再应用 `0003_task_workspace_required` 和 `0004_task_history`。若仍有旧共享工作区遗留的未归属任务，维护者须显式提供该用户的 Access issuer、subject、email 及确认值 `assign-existing-tasks`。迁移将所有未归属任务及其关联汇报保留到该单一工作区，不会推断或拆分归属。`0004_task_history` 将既有任务视为当前任务，不补造历史活动。首次归档后，旧版若忽略 `archived_at` 会重新显示归档任务，因此回退必须保留归档过滤与工作区隔离；移除历史 schema 需另行审查。完整迁移要求见[架构文档](ARCHITECTURE.zh-CN.md)。
+迁移不会随 API 启动自动执行。旧库升级时，先应用 `0002_identity_workspace`，让目标用户通过 Cloudflare Access 登录并建立个人工作区，再依次应用 `0003_task_workspace_required`、`0004_task_history` 和 `0005_report_comments`。若仍有旧共享工作区遗留的未归属任务，维护者须显式提供该用户的 Access issuer、subject、email 及确认值 `assign-existing-tasks`。迁移将所有未归属任务及其关联汇报保留到该单一工作区，不会推断或拆分归属。`0004_task_history` 将既有任务视为当前任务，不补造历史活动。首次归档后，旧版若忽略 `archived_at` 会重新显示归档任务，因此回退必须保留归档过滤与工作区隔离；移除历史 schema 需另行审查。完整迁移要求见[架构文档](ARCHITECTURE.zh-CN.md)。
