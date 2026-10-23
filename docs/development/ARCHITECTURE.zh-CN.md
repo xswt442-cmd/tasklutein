@@ -46,7 +46,7 @@ PostgreSQL 是生产数据源。`apps/api/migrations/0001_init.sql` 为新卷初
 
 FastAPI 在每次实际任务或报告变更的同一数据库事务中写入活动。事件类型包括 `task.created`、`task.updated`、`task.status_changed`、`task.deleted` 和 `report.created`；无变化的任务 PATCH 不更新 `updated_at`，也不产生事件。一次同时修改状态和其他字段的 PATCH 只写一条 `task.status_changed`。活动摘要只记录受控变更字段和状态前后值，不复制任务说明、报告正文或密钥。活动可由用户删除，是业务历史记录，不提供不可篡改的安全审计保证。
 
-任务更新、追加报告、归档和清理整组历史会锁定目标任务并检查归档状态，确保归档后不会再写入报告。任务数据与活动共用事务，活动写入失败会回滚对应业务变更。活动与历史查询仍由 FastAPI 按 M1.5 的 `workspace_id` 和已验证 Principal 限定。报告和活动保留已验证用户或 Agent Key 的 ID 关联；读取时 `actor_name` 从关联记录当前邮箱或名称解析，因此邮箱同步或密钥改名会改变旧记录的显示名称。系统不保存操作发生时的名称快照，旧报告无法恢复的身份保持未知并只显示来源。MCP 仅调用 REST，让网页与 Agent 共用相同的业务规则。
+任务更新、追加报告、归档和清理整组历史会锁定目标任务并检查归档状态，确保归档后不会再写入报告。任务数据与活动共用事务，活动写入失败会回滚对应业务变更。活动与历史查询仍由 FastAPI 按 M1.5 的 `workspace_id` 和已验证 Principal 限定。报告、评论和活动保留已验证用户 ID；Agent Key 存续时也保留其 ID，永久删除密钥时会清空对应的 `agent_token_id`，历史仍保留来源和用户归属。读取时 `actor_name` 从仍关联的用户邮箱或密钥名称解析，因此邮箱同步或密钥改名会改变旧记录的显示名称；删除密钥后不再显示该密钥名称。系统不保存操作发生时的名称快照，旧报告无法恢复的身份保持未知并只显示来源。MCP 仅调用 REST，让网页与 Agent 共用相同的业务规则。
 
 评论是附属于单条报告的平面记录，不构成回复线程。Web 用户和 Agent 密钥都可在各自工作区读取和添加评论；只有 Web 用户可物理删除评论。评论增删不写活动，也不更新任务 `updated_at`。MCP 通过 FastAPI REST 提供 `list_report_comments` 和 `add_report_comment`。
 

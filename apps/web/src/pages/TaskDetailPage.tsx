@@ -60,6 +60,7 @@ function CurrentReportComments({ reportId }: { reportId: string }) {
     {createComment.isError && <ApiFeedback error={createComment.error} />}
     {commentsQuery.isError && <ApiFeedback error={commentsQuery.error} onRetry={() => void commentsQuery.refetch()} />}
     {commentsQuery.isPending && <p className="mt-2 text-xs text-[#69776d]">正在加载评论…</p>}
+    {commentsQuery.data?.total === 0 && !commentsQuery.isError && <p className="mt-2 text-xs text-[#69776d]">还没有评论。</p>}
     {commentsQuery.data?.comments.map((comment) => <div key={comment.id} className="mt-3 flex items-start justify-between gap-3 rounded-lg bg-[#f8faf5] p-3">
       <div className="min-w-0"><div className="flex flex-wrap gap-2 text-[11px] text-[#718076]"><span>{comment.actor_name || (comment.source === "agent" ? "Agent" : "用户")}</span><time>{formatDate(comment.created_at)}</time></div><p className="mt-1 whitespace-pre-wrap break-words text-sm text-[#46574c]">{comment.content}</p></div>
       <button type="button" className="quiet-link shrink-0" disabled={deleteComment.isPending} onClick={() => { if (window.confirm("删除这条评论？")) deleteComment.mutate(comment.id); }}>删除</button>

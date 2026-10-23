@@ -218,6 +218,7 @@ describe("Tasklutein browser workflow over the real FastAPI HTTP API", () => {
     expect(browserRequests.some(({ method, url }) => method === "GET" && url.includes(`/api/reports/${report.id}/comments`))).toBe(false);
     fireEvent.click(await screen.findByRole("button", { name: "查看评论" }));
     await screen.findByLabelText("添加评论");
+    await screen.findByText("还没有评论。");
     expect(browserRequests.some(({ method, url }) => method === "GET" && url.includes(`/api/reports/${report.id}/comments`))).toBe(true);
     fireEvent.change(screen.getByLabelText("添加评论"), { target: { value: "Comment created in the browser" } });
     fireEvent.click(screen.getByRole("button", { name: "评论" }));
