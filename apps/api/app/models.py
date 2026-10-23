@@ -115,7 +115,7 @@ class Report(Base):
     )
     agent_token_id: Mapped[UUID | None] = mapped_column(
         Uuid(as_uuid=True),
-        ForeignKey("agent_tokens.id", name="fk_reports_agent_token_id_agent_tokens", ondelete="RESTRICT"),
+        ForeignKey("agent_tokens.id", name="fk_reports_agent_token_id_agent_tokens", ondelete="SET NULL"),
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now, server_default=func.now())
     task: Mapped[Task] = relationship(back_populates="reports")
@@ -146,7 +146,7 @@ class ReportComment(Base):
     )
     agent_token_id: Mapped[UUID | None] = mapped_column(
         Uuid(as_uuid=True),
-        ForeignKey("agent_tokens.id", name="fk_report_comments_agent_token_id_agent_tokens", ondelete="RESTRICT"),
+        ForeignKey("agent_tokens.id", name="fk_report_comments_agent_token_id_agent_tokens", ondelete="SET NULL"),
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now, server_default=func.now()

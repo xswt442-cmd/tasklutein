@@ -5,6 +5,7 @@ import threading
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from pathlib import Path
 from time import perf_counter, sleep
 from uuid import uuid4
@@ -301,7 +302,7 @@ def test_migration_refuses_downgrade_from_report_comment_schema(postgres_databas
         command.downgrade(alembic_config(), "0001_baseline")
     with create_engine(postgres_database).connect() as connection:
         revision = connection.scalar(text("SELECT version_num FROM alembic_version"))
-    assert revision == "0005_report_comments"
+    assert revision == "0006_agent_token_hard_delete"
 
 
 def test_report_comments_migration_keeps_existing_reports_and_indexes(postgres_database: str):
@@ -324,12 +325,24 @@ def test_report_comments_migration_keeps_existing_reports_and_indexes(postgres_d
             for foreign_key in comments.get_foreign_keys("report_comments")
             if foreign_key["constrained_columns"] == ["report_id"]
         )
+        report_agent_fk = next(
+            foreign_key
+            for foreign_key in comments.get_foreign_keys("reports")
+            if foreign_key["constrained_columns"] == ["agent_token_id"]
+        )
+        comment_agent_fk = next(
+            foreign_key
+            for foreign_key in comments.get_foreign_keys("report_comments")
+            if foreign_key["constrained_columns"] == ["agent_token_id"]
+        )
         indexes = comments.get_indexes("report_comments")
 
-    assert revision == "0005_report_comments"
+    assert revision == "0006_agent_token_hard_delete"
     assert (str(preserved.id), preserved.content) == (report["id"], report["content"])
     assert report_fk["referred_table"] == "reports"
     assert report_fk["options"]["ondelete"] == "CASCADE"
+    assert report_agent_fk["options"]["ondelete"] == "SET NULL"
+    assert comment_agent_fk["options"]["ondelete"] == "SET NULL"
     assert any(
         index["name"] == "idx_report_comments_report_created"
         and index["column_names"] == ["report_id", "created_at", "id"]
@@ -392,7 +405,7 @@ def test_postgres_ready_has_bounded_connection_and_query_timeouts(postgres_datab
         get_session_factory()
 
 
-def test_postgres_agent_key_metadata_updates_and_revocation_retain_record(postgres_database: str):
+def test_postgres_agent_key_metadata_updates_and_delete_remove_record(postgres_database: str):
     command.upgrade(alembic_config(), "head")
     with TestClient(app) as client:
         owner_headers, _owner = _new_identity(client, "agent-key-owner")
@@ -427,21 +440,73 @@ def test_postgres_agent_key_metadata_updates_and_revocation_retain_record(postgr
             json={"name": "Agent edit"},
         ).status_code == 403
 
-        revoked = client.delete(f"/api/agent-tokens/{token_id}", headers=owner_headers)
-        assert revoked.status_code == 204
-        assert client.delete(f"/api/agent-tokens/{token_id}", headers=owner_headers).status_code == 204
+        assert client.delete(f"/api/agent-tokens/{token_id}", headers=other_headers).status_code == 404
+        deleted = client.delete(f"/api/agent-tokens/{token_id}", headers=owner_headers)
+        assert deleted.status_code == 204
+        assert client.delete(f"/api/agent-tokens/{token_id}", headers=owner_headers).status_code == 404
         final_tokens = client.get("/api/agent-tokens", headers=owner_headers).json()["tokens"]
-        assert len(final_tokens) == 1
-        assert final_tokens[0]["id"] == token_id
-        assert final_tokens[0]["name"] == "After edit"
-        assert final_tokens[0]["revoked_at"] is not None
-        assert final_tokens[0]["prefix"] == secret[:7]
+        assert final_tokens == []
         assert client.patch(
             f"/api/agent-tokens/{token_id}",
             headers=owner_headers,
-            json={"name": "After revoke"},
-        ).status_code == 409
+            json={"name": "After delete"},
+        ).status_code == 404
         assert client.get("/api/agent/whoami", headers=agent_headers(secret)).status_code == 401
+
+
+def test_postgres_agent_key_delete_preserves_history_and_removes_key_data(postgres_database: str):
+    command.upgrade(alembic_config(), "head")
+    with TestClient(app) as client:
+        owner_headers, owner = _new_identity(client, "agent-key-delete-history")
+        secret, token_id = issue_agent_key(client, owner_headers, "Delete with history")
+        agent = agent_headers(secret)
+        task = _create_task(client, owner_headers)
+        agent_report = client.post(
+            f"/api/tasks/{task['id']}/reports", headers=agent, json={"content": "Keep this report"}
+        )
+        assert agent_report.status_code == 201, agent_report.text
+        report_id = agent_report.json()["report"]["id"]
+        comment = client.post(
+            f"/api/reports/{report_id}/comments", headers=agent, json={"content": "Keep this comment"}
+        )
+        assert comment.status_code == 201, comment.text
+        comment_id = comment.json()["comment"]["id"]
+
+        assert client.delete(f"/api/agent-tokens/{token_id}", headers=owner_headers).status_code == 204
+        assert client.get("/api/agent-tokens", headers=owner_headers).json()["tokens"] == []
+        assert client.get("/api/agent/whoami", headers=agent).status_code == 401
+        reports = client.get(f"/api/tasks/{task['id']}/reports", headers=owner_headers).json()["reports"]
+        assert reports[0]["id"] == report_id
+        assert reports[0]["content"] == "Keep this report"
+        assert reports[0]["actor_name"] is None
+        comments = client.get(f"/api/reports/{report_id}/comments", headers=owner_headers).json()["comments"]
+        assert comments[0]["id"] == comment_id
+        assert comments[0]["content"] == "Keep this comment"
+        assert comments[0]["actor_name"] is None
+
+    with create_engine(postgres_database).connect() as connection:
+        token_count = connection.scalar(text("SELECT count(*) FROM agent_tokens WHERE id = :id"), {"id": token_id})
+        token_hash_count = connection.scalar(
+            text("SELECT count(*) FROM agent_tokens WHERE token_hash = :hash"),
+            {"hash": sha256(secret.encode("utf-8")).hexdigest()},
+        )
+        report_refs = connection.execute(
+            text("SELECT agent_token_id, actor_user_id FROM reports WHERE id = :id"), {"id": report_id}
+        ).one()
+        comment_refs = connection.execute(
+            text("SELECT agent_token_id, actor_user_id FROM report_comments WHERE id = :id"), {"id": comment_id}
+        ).one()
+        activity_refs = connection.execute(
+            text("SELECT agent_token_id FROM activities WHERE event_type = 'report.created' AND task_id = :id"),
+            {"id": task["id"]},
+        ).one()
+    assert token_count == 0
+    assert token_hash_count == 0
+    assert report_refs.agent_token_id is None
+    assert str(report_refs.actor_user_id) == owner["user"]["id"]
+    assert comment_refs.agent_token_id is None
+    assert str(comment_refs.actor_user_id) == owner["user"]["id"]
+    assert activity_refs.agent_token_id is None
 
 
 def _new_identity(client: TestClient, label: str) -> tuple[dict[str, str], dict]:

@@ -241,10 +241,16 @@ def test_task_lifecycle_agent_keys_and_report_provenance(client: TestClient):
 
     tokens = client.get("/api/agent-tokens", headers=user_headers()).json()["tokens"]
     ci_token = next(token for token in tokens if token["name"] == "CI Agent")
-    revoked = client.delete(f"/api/agent-tokens/{ci_token['id']}", headers=user_headers())
-    assert revoked.status_code == 204
+    deleted = client.delete(f"/api/agent-tokens/{ci_token['id']}", headers=user_headers())
+    assert deleted.status_code == 204
     assert client.get("/api/agent/whoami", headers=agent_headers(first_secret)).status_code == 401
     assert client.get("/api/agent/whoami", headers=agent_headers(second_secret)).status_code == 200
+    remaining_tokens = client.get("/api/agent-tokens", headers=user_headers()).json()["tokens"]
+    assert len(remaining_tokens) == 1
+    assert remaining_tokens[0]["prefix"] == second_secret[:7]
+    listed_reports = client.get(f"/api/tasks/{task_id}/reports", headers=user_headers()).json()["reports"]
+    agent_report = next(report for report in listed_reports if report["source"] == "agent")
+    assert agent_report["actor_name"] is None
 
     assert client.delete("/api/tasks/" + task_id, headers=user_headers()).status_code == 204
     assert client.get("/api/tasks/" + task_id, headers=user_headers()).status_code == 404
@@ -293,8 +299,8 @@ def test_agent_key_can_update_name_and_expiration(client: TestClient):
     assert cleared_expiry.json()["token"]["expires_at"] is None
 
 
-def test_revoked_agent_key_stays_visible_but_cannot_be_updated(client: TestClient):
-    created = client.post("/api/agent-tokens", headers=user_headers(), json={"name": "Keep revoked row"})
+def test_agent_key_delete_is_workspace_scoped_and_removes_metadata(client: TestClient):
+    created = client.post("/api/agent-tokens", headers=user_headers(), json={"name": "Delete this row"})
     token_id = created.json()["token"]["id"]
     other_headers = user_headers(subject="other-key-owner", email="other-key-owner@example.test")
     assert client.post("/api/session/bootstrap", headers=other_headers).status_code == 200
@@ -307,19 +313,21 @@ def test_revoked_agent_key_stays_visible_but_cannot_be_updated(client: TestClien
         headers=agent_headers(created.json()["secret"]),
         json={"name": "Agent cannot edit"},
     ).status_code == 403
+    assert client.delete(
+        f"/api/agent-tokens/{token_id}", headers=agent_headers(created.json()["secret"])
+    ).status_code == 403
 
-    revoked = client.delete(f"/api/agent-tokens/{token_id}", headers=user_headers())
-    assert revoked.status_code == 204
-    listed = client.get("/api/agent-tokens", headers=user_headers()).json()["tokens"]
-    assert len(listed) == 1
-    assert listed[0]["id"] == token_id
-    assert listed[0]["name"] == "Keep revoked row"
-    assert listed[0]["revoked_at"] is not None
-    assert listed[0]["prefix"] == created.json()["secret"][:7]
+    assert client.delete(f"/api/agent-tokens/{token_id}", headers=other_headers).status_code == 404
+    deleted = client.delete(f"/api/agent-tokens/{token_id}", headers=user_headers())
+    assert deleted.status_code == 204
+    assert client.get("/api/agent-tokens", headers=user_headers()).json()["tokens"] == []
+    assert client.delete(f"/api/agent-tokens/{token_id}", headers=user_headers()).status_code == 404
     assert client.patch(
-        f"/api/agent-tokens/{token_id}", headers=user_headers(), json={"name": "After revoke"}
-    ).status_code == 409
-    assert client.delete(f"/api/agent-tokens/{token_id}", headers=user_headers()).status_code == 204
+        f"/api/agent-tokens/{token_id}", headers=user_headers(), json={"name": "After delete"}
+    ).status_code == 404
+    factory = app.state.test_session_factory
+    with factory() as db:
+        assert db.get(AgentToken, UUID(token_id)) is None
 
 
 def test_disabled_user_rejects_user_and_agent_credentials(client: TestClient):
@@ -624,7 +632,11 @@ def test_report_comments_are_workspace_scoped_paginated_and_attributed(client: T
         f"{comments_url}/{agent_comment.json()['comment']['id']}", headers=agent
     ).status_code == 403
     assert client.delete(f"/api/agent-tokens/{agent_token_id}", headers=user_headers()).status_code == 204
-    assert client.post(comments_url, headers=agent, json={"content": "Revoked key"}).status_code == 401
+    assert client.post(comments_url, headers=agent, json={"content": "Deleted key"}).status_code == 401
+    after_key_delete = client.get(comments_url, headers=user_headers()).json()["comments"]
+    agent_comment_after_delete = next(comment for comment in after_key_delete if comment["id"] == agent_comment.json()["comment"]["id"])
+    assert agent_comment_after_delete["source"] == "agent"
+    assert agent_comment_after_delete["actor_name"] is None
     assert client.delete(
         f"{comments_url}/{agent_comment.json()['comment']['id']}", headers=user_headers()
     ).status_code == 204

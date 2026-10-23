@@ -1,6 +1,5 @@
 """Per-user Agent keys and the MCP identity endpoint."""
 import secrets
-from datetime import UTC, datetime
 from hashlib import sha256
 from uuid import UUID
 
@@ -90,7 +89,7 @@ def update_agent_token(
 
 
 @router.delete("/agent-tokens/{token_id}", status_code=204)
-def revoke_agent_token(
+def delete_agent_token(
     token_id: UUID,
     principal: Principal = Depends(require_user_principal),
     db: Session = Depends(get_db),
@@ -103,9 +102,8 @@ def revoke_agent_token(
     )
     if token is None:
         raise HTTPException(status_code=404, detail="agent_token_not_found")
-    if token.revoked_at is None:
-        token.revoked_at = datetime.now(UTC)
-        db.commit()
+    db.delete(token)
+    db.commit()
     return Response(status_code=204)
 
 
