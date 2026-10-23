@@ -487,7 +487,7 @@ describe("Tasklutein browser workflow over the real FastAPI HTTP API", () => {
     expect(screen.getByRole("button", { name: "上一页" }).hasAttribute("disabled")).toBe(false);
   });
 
-  it("creates, lists, displays once, and revokes a personal Agent key through real HTTP", async () => {
+  it("creates, lists, displays once, edits, and permanently deletes a personal Agent key", async () => {
     await enterWorkspace();
     fireEvent.click(screen.getAllByRole("link", { name: "设置" })[0]);
     await screen.findByRole("heading", { name: "设置" });
@@ -527,16 +527,13 @@ describe("Tasklutein browser workflow over the real FastAPI HTTP API", () => {
     expect(editedListing.tokens[0].expires_at).toEqual(expect.any(String));
     expect(JSON.stringify(editedListing)).not.toContain(secret);
 
-    fireEvent.click(await screen.findByRole("button", { name: "撤销" }));
-    await screen.findByText(/已撤销/);
-    const revokedRow = screen.getByText(displayPrefix ?? "").closest("li");
-    expect(revokedRow?.textContent).toContain("Renamed browser key");
-    expect(revokedRow?.textContent).toContain("已撤销");
-    expect(revokedRow?.querySelector("button")).toBeNull();
-    const revokedTokens = await nativeFetch(new URL("/api/agent-tokens", apiOrigin), { headers: testHeaders() });
-    const revokedListing = await revokedTokens.json() as { tokens: Array<{ id: string; revoked_at: string | null }> };
-    expect(revokedListing.tokens).toHaveLength(1);
-    expect(revokedListing.tokens[0]).toMatchObject({ id: listing.tokens[0].id, revoked_at: expect.any(String) });
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    fireEvent.click(await screen.findByRole("button", { name: "删除" }));
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("永久删除“Renamed browser key”"));
+    await screen.findByText("尚未创建 Agent 密钥。");
+    const deletedTokens = await nativeFetch(new URL("/api/agent-tokens", apiOrigin), { headers: testHeaders() });
+    const deletedListing = await deletedTokens.json() as { tokens: Array<{ id: string }> };
+    expect(deletedListing.tokens).toEqual([]);
   });
 
   it("shares the same FastAPI data and attribution through real HTTP MCP tools", async () => {

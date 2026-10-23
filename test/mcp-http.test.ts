@@ -160,7 +160,7 @@ afterAll(async () => {
 });
 
 describe("Tasklutein HTTP MCP with a real local FastAPI process", () => {
-  it("isolates personal keys, runs all eight tools, and rejects revoked keys", async () => {
+  it("isolates personal keys, runs all eight tools, and rejects deleted keys", async () => {
     await mkdir(scratchDirectory, { recursive: true });
     databasePath = join(scratchDirectory, "mcp-integration-" + randomUUID() + ".sqlite");
     const databaseUrl = "sqlite:///" + databasePath.replaceAll("\\", "/");
