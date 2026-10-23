@@ -14,6 +14,7 @@ This file records shipped features, fixes, compatibility changes, and upgrade re
 
 **改进**
 - 游客可以浏览不可操作的前端预览；仅 `/api/*` 要求 Cloudflare Access 登录，已登录用户仍可使用原有工作区功能。
+- Agent 密钥现在可永久删除并立即失效；关联汇报、评论和活动保留，但解除与该密钥的关联。
 
 ### English
 
@@ -23,6 +24,7 @@ This file records shipped features, fixes, compatibility changes, and upgrade re
 
 **Improved**
 - Guests can browse a non-interactive frontend preview; Cloudflare Access protects only `/api/*`, while signed-in users retain the existing workspace features.
+- Agent keys can now be permanently deleted and immediately disabled; associated reports, comments, and activities remain with their key references cleared.
 
 ## [0.1.2] - 2026-10-19
 

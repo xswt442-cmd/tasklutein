@@ -21,10 +21,10 @@ Web 和远程 MCP 使用各自配置的 Cloudflare Worker hostname。Web 主机�
 | GET | `/api/agent-tokens` | 列出当前工作区的 Agent 密钥元数据 |
 | POST | `/api/agent-tokens` | 创建个人 Agent 密钥 |
 | PATCH | `/api/agent-tokens/{uuid}` | 修改未撤销密钥的名称或到期时间 |
-| DELETE | `/api/agent-tokens/{uuid}` | 撤销密钥并保留其元数据 |
+| DELETE | `/api/agent-tokens/{uuid}` | 永久删除当前工作区的密钥 |
 | GET | `/api/agent/whoami` | 校验 Agent 密钥并返回其用户、工作区和密钥标识 |
 
-`POST /api/agent-tokens` 接受 `{"name":"Build agent","expires_at":null}`。`name` 长度为 1–80 个字符；可选的 `expires_at` 必须是带时区且在未来的时间。成功返回 `201`，包含一次性明文 `secret` 和不含明文的 `token` 元数据。服务端只保存密钥摘要和显示前缀；明文只在创建响应中出现，之后不能通过 API 再次读取。元数据中的 `prefix` 固定为 `tlu_` 加密钥后 3 个字符；列表和更新响应不包含其余密钥字符、明文或摘要。列表包含 `id`、`name`、`prefix`、创建时间、到期时间和撤销时间，并继续列出已撤销密钥。`PATCH` 可分别更新 `name` 和 `expires_at`；将 `expires_at` 设为 `null` 表示永不过期。只有当前工作区的未撤销密钥可以更新；已撤销密钥返回 `409`，其他工作区的密钥返回 `404`。`DELETE` 执行软撤销并返回 `204`；列表仍保留该行并设置 `revoked_at`，重复撤销也是 `204`。
+`POST /api/agent-tokens` 接受 `{"name":"Build agent","expires_at":null}`。`name` 长度为 1–80 个字符；可选的 `expires_at` 必须是带时区且在未来的时间。成功返回 `201`，包含一次性明文 `secret` 和不含明文的 `token` 元数据。服务端只保存密钥摘要和显示前缀；明文只在创建响应中出现，之后不能通过 API 再次读取。元数据中的 `prefix` 固定为 `tlu_` 加密钥后 3 个字符；列表和更新响应不包含其余密钥字符、明文或摘要。列表包含 `id`、`name`、`prefix`、创建时间、到期时间和撤销时间；升级前已撤销的密钥仍会列出，直到用户删除。`PATCH` 可分别更新 `name` 和 `expires_at`；将 `expires_at` 设为 `null` 表示永不过期。只有当前工作区的未撤销密钥可以更新；已撤销密钥返回 `409`，其他工作区的密钥返回 `404`。`DELETE` 永久删除密钥行并返回 `204`；重复删除返回 `404`。关联的汇报、评论和活动保留，`agent_token_id` 置空，因此历史记录不再显示该密钥名称。
 
 Agent 密钥只允许在 MCP 身份验证和 MCP 所调用的 API 中使用。通过 Web hostname 发起的 `/api/*` 请求按 Web 身份认证；该 hostname 不提供使用 Agent Bearer 密钥的公共 REST 登录方式。
 
@@ -115,4 +115,4 @@ API 声明请求体超过 64 KiB 时返回 `413`；MCP 使用独立的 1 MiB 请
 
 ## 数据库升级兼容性
 
-迁移不会随 API 启动自动执行。旧库升级时，先应用 `0002_identity_workspace`，让目标用户通过 Cloudflare Access 登录并建立个人工作区，再依次应用 `0003_task_workspace_required`、`0004_task_history` 和 `0005_report_comments`。若仍有旧共享工作区遗留的未归属任务，维护者须显式提供该用户的 Access issuer、subject、email 及确认值 `assign-existing-tasks`。迁移将所有未归属任务及其关联汇报保留到该单一工作区，不会推断或拆分归属。`0004_task_history` 将既有任务视为当前任务，不补造历史活动。首次归档后，旧版若忽略 `archived_at` 会重新显示归档任务，因此回退必须保留归档过滤与工作区隔离；移除历史 schema 需另行审查。完整迁移要求见[架构文档](ARCHITECTURE.zh-CN.md)。
+迁移不会随 API 启动自动执行。旧库升级时，先应用 `0002_identity_workspace`，让目标用户通过 Cloudflare Access 登录并建立个人工作区，再依次应用 `0003_task_workspace_required`、`0004_task_history`、`0005_report_comments` 和 `0006_agent_token_hard_delete`。若仍有旧共享工作区遗留的未归属任务，维护者须显式提供该用户的 Access issuer、subject、email 及确认值 `assign-existing-tasks`。迁移将所有未归属任务及其关联汇报保留到该单一工作区，不会推断或拆分归属。`0004_task_history` 将既有任务视为当前任务，不补造历史活动。`0006_agent_token_hard_delete` 允许永久移除密钥，同时保留汇报、评论和活动，并清空其中指向该密钥的外键。首次归档后，旧版若忽略 `archived_at` 会重新显示归档任务，因此回退必须保留归档过滤与工作区隔离；移除历史 schema 需另行审查。完整迁移要求见[架构文档](ARCHITECTURE.zh-CN.md)。

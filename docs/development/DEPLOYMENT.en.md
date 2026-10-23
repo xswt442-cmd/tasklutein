@@ -83,6 +83,16 @@ docker compose -f deploy/compose.yml --env-file deploy/.env up -d api mcp
 
 `0004_task_history` adds a nullable task archive timestamp and creates the activity table. Existing tasks remain current, and the migration does not fabricate historical activity. The migration does not downgrade automatically. After the first archive, a rollback version must continue to filter archived tasks; do not use a downgrade or clear business history to restore an older version.
 
+When upgrading a deployed environment, back it up and verify the target first, build API/MCP images containing the current migrations, apply them, and update only those services:
+
+```sh
+docker compose -f deploy/compose.yml --env-file deploy/.env build api mcp
+docker compose -f deploy/compose.yml --env-file deploy/.env run --rm --no-deps api alembic upgrade head
+docker compose -f deploy/compose.yml --env-file deploy/.env up -d --no-deps api mcp
+```
+
+`0005_report_comments` adds report comments. `0006_agent_token_hard_delete` permits physical Agent-key deletion while preserving history and clearing its key references.
+
 ## Release, Backup and Recovery
 
 - `dev` is for development/Preview and `main` for released source. Keep data, tokens, Worker origins, and Tunnel settings isolated by environment.

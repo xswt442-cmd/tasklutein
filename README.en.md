@@ -22,7 +22,7 @@
 
 1. Open [Tasklutein](https://tasklutein.xswt.fyi) to browse the interface; sign in through Cloudflare Access to use a workspace.
 2. Create tasks, update their statuses, and record progress. When removing a task, archive it to keep its history or permanently delete the full history.
-3. To connect an Agent, open Settings, create a personal Agent key, and save the secret immediately. Its plaintext cannot be viewed again; you can edit its name or expiry and revoke it. Lists show only `tlu_` plus the next three key characters, and retain revoked keys with their status.
+3. To connect an Agent, open Settings, create a personal Agent key, and save the secret immediately. Its plaintext cannot be viewed again; you can edit its name or expiry and permanently delete it. Lists show only `tlu_` plus the next three key characters. Deletion removes the key record; related reports, comments, and activities remain without displaying that key's name.
 
 Tasklutein creates a workspace after Cloudflare Access verifies the user. Workspaces are isolated by Access issuer and user subject; current tasks, archived history, activity records, overview data, and Agent keys are scoped to their workspace.
 
