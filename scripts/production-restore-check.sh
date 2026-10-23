@@ -45,11 +45,34 @@ docker cp "$snapshot" "$name:/tmp/restore.dump"
 docker exec "$name" pg_restore --exit-on-error --no-owner --no-acl \
   -U postgres -d postgres /tmp/restore.dump
 
-tables="$(docker exec "$name" psql -U postgres -d postgres -At -c \
-  "SELECT string_agg(tablename,',' ORDER BY tablename) FROM pg_tables WHERE schemaname='public'")"
-[[ "$tables" == "reports,tasks" ]] || { echo "Unexpected restored tables" >&2; exit 6; }
-counts="$(docker exec "$name" psql -U postgres -d postgres -At -c \
-  "SELECT 'tasks='||(SELECT count(*) FROM public.tasks)||',reports='||(SELECT count(*) FROM public.reports)")"
+revision="$(docker exec "$name" psql -U postgres -d postgres -At -c \
+  'SELECT version_num FROM public.alembic_version')"
+case "$revision" in
+  0004_task_history)
+    required_tables=(activities agent_tokens alembic_version reports tasks users workspaces)
+    ;;
+  0005_report_comments|0006_agent_token_hard_delete)
+    required_tables=(activities agent_tokens alembic_version report_comments reports tasks users workspaces)
+    ;;
+  *)
+    echo "Unsupported restored Alembic revision: $revision" >&2
+    exit 6
+    ;;
+esac
 
-echo "RESTORE=PASS network=none storage=tmpfs tables=$tables $counts"
+for table in "${required_tables[@]}"; do
+  present="$(docker exec "$name" psql -U postgres -d postgres -At -c \
+    "SELECT to_regclass('public.$table') IS NOT NULL")"
+  [[ "$present" == "t" ]] || { echo "Missing restored table: $table" >&2; exit 7; }
+done
+
+counts="$(docker exec "$name" psql -U postgres -d postgres -At -c \
+  "SELECT 'tasks='||(SELECT count(*) FROM public.tasks)||',reports='||(SELECT count(*) FROM public.reports)||',activities='||(SELECT count(*) FROM public.activities)")"
+if [[ "$revision" != "0004_task_history" ]]; then
+  comments="$(docker exec "$name" psql -U postgres -d postgres -At -c \
+    'SELECT count(*) FROM public.report_comments')"
+  counts="$counts,comments=$comments"
+fi
+
+echo "RESTORE=PASS network=none storage=tmpfs revision=$revision required_tables=${required_tables[*]} $counts"
 echo "The disposable restore container is automatically removed on exit."
