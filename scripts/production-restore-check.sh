@@ -45,9 +45,22 @@ docker cp "$snapshot" "$name:/tmp/restore.dump"
 docker exec "$name" pg_restore --exit-on-error --no-owner --no-acl \
   -U postgres -d postgres /tmp/restore.dump
 
-revision="$(docker exec "$name" psql -U postgres -d postgres -At -c \
-  'SELECT version_num FROM public.alembic_version')"
+version_table_exists="$(docker exec "$name" psql -U postgres -d postgres -At -c \
+  "SELECT to_regclass('public.alembic_version') IS NOT NULL")"
+if [[ "$version_table_exists" == "t" ]]; then
+  revision="$(docker exec "$name" psql -U postgres -d postgres -At -c \
+    'SELECT version_num FROM public.alembic_version')"
+else
+  revision=0001_baseline
+fi
 case "$revision" in
+  0001_baseline)
+    if [[ "$version_table_exists" == "t" ]]; then
+      required_tables=(alembic_version reports tasks)
+    else
+      required_tables=(reports tasks)
+    fi
+    ;;
   0004_task_history)
     required_tables=(activities agent_tokens alembic_version reports tasks users workspaces)
     ;;
@@ -66,13 +79,23 @@ for table in "${required_tables[@]}"; do
   [[ "$present" == "t" ]] || { echo "Missing restored table: $table" >&2; exit 7; }
 done
 
-counts="$(docker exec "$name" psql -U postgres -d postgres -At -c \
-  "SELECT 'tasks='||(SELECT count(*) FROM public.tasks)||',reports='||(SELECT count(*) FROM public.reports)||',activities='||(SELECT count(*) FROM public.activities)")"
-if [[ "$revision" != "0004_task_history" ]]; then
-  comments="$(docker exec "$name" psql -U postgres -d postgres -At -c \
-    'SELECT count(*) FROM public.report_comments')"
-  counts="$counts,comments=$comments"
-fi
+case "$revision" in
+  0001_baseline)
+    counts="$(docker exec "$name" psql -U postgres -d postgres -At -c \
+      "SELECT 'tasks='||(SELECT count(*) FROM public.tasks)||',reports='||(SELECT count(*) FROM public.reports)")"
+    ;;
+  0004_task_history)
+    counts="$(docker exec "$name" psql -U postgres -d postgres -At -c \
+      "SELECT 'tasks='||(SELECT count(*) FROM public.tasks)||',reports='||(SELECT count(*) FROM public.reports)||',activities='||(SELECT count(*) FROM public.activities)")"
+    ;;
+  0005_report_comments|0006_agent_token_hard_delete)
+    counts="$(docker exec "$name" psql -U postgres -d postgres -At -c \
+      "SELECT 'tasks='||(SELECT count(*) FROM public.tasks)||',reports='||(SELECT count(*) FROM public.reports)||',activities='||(SELECT count(*) FROM public.activities)")"
+    comments="$(docker exec "$name" psql -U postgres -d postgres -At -c \
+      'SELECT count(*) FROM public.report_comments')"
+    counts="$counts,comments=$comments"
+    ;;
+esac
 
 echo "RESTORE=PASS network=none storage=tmpfs revision=$revision required_tables=${required_tables[*]} $counts"
 echo "The disposable restore container is automatically removed on exit."
