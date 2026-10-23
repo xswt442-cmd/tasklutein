@@ -238,6 +238,8 @@ describe("Tasklutein browser workflow over the real FastAPI HTTP API", () => {
     if (!(firstComment instanceof HTMLElement)) throw new Error("The paginated comment container was missing");
     fireEvent.click(within(firstComment).getByRole("button", { name: "删除" }));
     await waitFor(() => expect(browserRequests.some(({ method, url }) => method === "DELETE" && url.includes(`/api/reports/${report.id}/comments/`))).toBe(true));
+    await screen.findByText("Comment page 23");
+    await waitFor(() => expect(screen.queryByText("Comment page 24")).toBeNull());
 
     fireEvent.click(screen.getByRole("button", { name: "刷新数据" }));
     await screen.findByText(title);

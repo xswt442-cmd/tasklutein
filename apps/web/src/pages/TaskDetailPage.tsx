@@ -41,6 +41,11 @@ function CurrentReportComments({ reportId }: { reportId: string }) {
     queryKey: ["report-comments", reportId, 25, offset],
     queryFn: () => api<ReportCommentPage>(`/reports/${reportId}/comments?limit=25&offset=${offset}`),
   });
+  useEffect(() => {
+    const data = commentsQuery.data;
+    if (!data || offset === 0 || offset < data.total) return;
+    setOffset(data.total === 0 ? 0 : Math.floor((data.total - 1) / data.limit) * data.limit);
+  }, [offset, commentsQuery.data]);
   const createComment = useMutation({
     mutationFn: () => api(`/reports/${reportId}/comments`, { method: "POST", body: JSON.stringify({ content: draft.trim() }) }),
     onSuccess: async () => { setDraft(""); setOffset(0); await queryClient.invalidateQueries({ queryKey: ["report-comments", reportId] }); },

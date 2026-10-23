@@ -108,6 +108,8 @@ Agent 密钥只允许在 MCP 身份验证和 MCP 所调用的 API 中使用。�
 | `create_task` | title、可选 description | 在密钥所属工作区新建任务 |
 | `update_task` | id、可选 title/description/status | 修改该工作区任务 |
 | `add_report` | task_id、content | 追加 Agent 汇报 |
+| `list_report_comments` | report_id（UUID）、可选 limit/offset | 分页读取该工作区报告的评论 |
+| `add_report_comment` | report_id（UUID）、content | 为该工作区的当前报告添加 Agent 评论 |
 
 可选本地 stdio MCP 适配器使用 `TASKLUTEIN_API_TOKEN` 配置个人 Agent 密钥，并通过 FastAPI REST API 访问当前工作区。现有任务 MCP 工具只处理当前任务，不返回或修改归档任务。
 

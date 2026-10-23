@@ -108,6 +108,8 @@ URL: `https://<mcp-host>/mcp`. On the configured MCP hostname, the Worker routes
 | `create_task` | title, optional description | Create a task in the key's workspace |
 | `update_task` | id, optional title/description/status | Update a task in that workspace |
 | `add_report` | task_id, content | Append an Agent report |
+| `list_report_comments` | report_id (UUID), optional limit and offset | Read one page of comments on a report in that workspace |
+| `add_report_comment` | report_id (UUID), content | Add an Agent comment to a current report in that workspace |
 
 The optional local stdio MCP adapter uses a personal Agent key configured as `TASKLUTEIN_API_TOKEN` and calls the FastAPI REST API for that workspace. Existing MCP task tools operate only on current tasks and do not read or modify archived tasks.
 
