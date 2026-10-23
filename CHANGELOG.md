@@ -8,13 +8,31 @@ This file records shipped features, fixes, compatibility changes, and upgrade re
 
 ### 简体中文
 
+**新增**
+- 每条进度汇报支持工作区范围内的平面评论；Web 用户和 Agent 可读取、添加评论，只有 Web 用户可删除。评论不产生活动或修改任务更新时间，删除报告或任务时评论随之清除。
+- MCP 新增 `list_report_comments` 和 `add_report_comment` 工具。
+
 **改进**
 - 游客可以浏览不可操作的前端预览；仅 `/api/*` 要求 Cloudflare Access 登录，已登录用户仍可使用原有工作区功能。
+- Agent 密钥现在可永久删除并立即失效；关联汇报、评论和活动保留，但解除与该密钥的关联。
+
+**升级说明**
+- 现有数据库需在前置迁移后依次应用 `0005_report_comments` 和 `0006_agent_token_hard_delete`；迁移不会随 API 启动自动运行，`0005_report_comments` 不支持降级。
+- 升级前已撤销的 Agent 密钥会继续列出，直到用户删除。
 
 ### English
 
+**Added**
+- Add workspace-scoped flat comments to progress reports. Web users and Agents can read and add comments; only Web users can delete them. Comments do not create activity or update task timestamps, and are removed with their report or task.
+- Add the MCP tools `list_report_comments` and `add_report_comment`.
+
 **Improved**
 - Guests can browse a non-interactive frontend preview; Cloudflare Access protects only `/api/*`, while signed-in users retain the existing workspace features.
+- Agent keys can now be permanently deleted and immediately disabled; associated reports, comments, and activities remain with their key references cleared.
+
+**Upgrade notes**
+- For an existing database, apply `0005_report_comments` and then `0006_agent_token_hard_delete` after the prerequisite migrations. Migrations do not run automatically when the API starts, and `0005_report_comments` does not support downgrade.
+- Agent keys revoked before the upgrade remain listed until the user deletes them.
 
 ## [0.1.2] - 2026-10-19
 

@@ -211,6 +211,35 @@ describe("Tasklutein browser workflow over the real FastAPI HTTP API", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "添加汇报" }));
     await screen.findByText("Browser report saved through the FastAPI report endpoint.");
+    const createdTaskResponse = await nativeFetch(new URL("/api/tasks?q=" + encodeURIComponent(title), apiOrigin), { headers: testHeaders() });
+    const createdTask = (await createdTaskResponse.json() as { tasks: Array<{ id: string }> }).tasks[0];
+    const reportResponse = await nativeFetch(new URL(`/api/tasks/${createdTask.id}/reports`, apiOrigin), { headers: testHeaders() });
+    const report = (await reportResponse.json() as { reports: Array<{ id: string }> }).reports[0];
+    expect(browserRequests.some(({ method, url }) => method === "GET" && url.includes(`/api/reports/${report.id}/comments`))).toBe(false);
+    fireEvent.click(await screen.findByRole("button", { name: "查看评论" }));
+    await screen.findByLabelText("添加评论");
+    await screen.findByText("还没有评论。");
+    expect(browserRequests.some(({ method, url }) => method === "GET" && url.includes(`/api/reports/${report.id}/comments`))).toBe(true);
+    fireEvent.change(screen.getByLabelText("添加评论"), { target: { value: "Comment created in the browser" } });
+    fireEvent.click(screen.getByRole("button", { name: "评论" }));
+    await screen.findByText("Comment created in the browser");
+    for (let index = 0; index < 25; index += 1) {
+      const response = await nativeFetch(new URL(`/api/reports/${report.id}/comments`, apiOrigin), {
+        method: "POST", headers: { ...testHeaders(), "Content-Type": "application/json" }, body: JSON.stringify({ content: `Comment page ${index}` }),
+      });
+      expect(response.status).toBe(201);
+    }
+    fireEvent.click(screen.getByRole("button", { name: "刷新数据" }));
+    await screen.findByRole("button", { name: "下一页评论" });
+    fireEvent.click(screen.getByRole("button", { name: "下一页评论" }));
+    await screen.findByText("Comment page 24");
+    const confirmCommentDelete = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const firstComment = screen.getByText("Comment page 24").closest(".rounded-lg");
+    if (!(firstComment instanceof HTMLElement)) throw new Error("The paginated comment container was missing");
+    fireEvent.click(within(firstComment).getByRole("button", { name: "删除" }));
+    await waitFor(() => expect(browserRequests.some(({ method, url }) => method === "DELETE" && url.includes(`/api/reports/${report.id}/comments/`))).toBe(true));
+    await screen.findByText("Comment page 23");
+    await waitFor(() => expect(screen.queryByText("Comment page 24")).toBeNull());
 
     fireEvent.click(screen.getByRole("button", { name: "刷新数据" }));
     await screen.findByText(title);
@@ -262,6 +291,8 @@ describe("Tasklutein browser workflow over the real FastAPI HTTP API", () => {
     fireEvent.change(screen.getByLabelText("工作汇报内容"), { target: { value: initialReport } });
     fireEvent.click(screen.getByRole("button", { name: "添加汇报" }));
     await screen.findByText(initialReport);
+    const taskBeforeArchiveResponse = await nativeFetch(new URL("/api/tasks?q=" + encodeURIComponent(title), apiOrigin), { headers: testHeaders() });
+    const taskBeforeArchive = (await taskBeforeArchiveResponse.json() as { tasks: Array<{ id: string }> }).tasks[0];
     await waitFor(() => expect(screen.getAllByText(testEmail)).toHaveLength(actorNameCountBeforeReport + 1));
     const currentTaskResponse = await nativeFetch(new URL("/api/tasks?q=" + encodeURIComponent(title), apiOrigin), {
       headers: testHeaders(),
@@ -269,6 +300,7 @@ describe("Tasklutein browser workflow over the real FastAPI HTTP API", () => {
     const currentTaskPage = await currentTaskResponse.json() as { tasks: Array<{ id: string }> };
     const taskId = currentTaskPage.tasks[0]?.id;
     if (!taskId) throw new Error("The UI-created task was missing from the current task API");
+    let newestReportId = "";
     for (let index = 0; index < 25; index += 1) {
       const report = await nativeFetch(new URL(`/api/tasks/${taskId}/reports`, apiOrigin), {
         method: "POST",
@@ -276,7 +308,12 @@ describe("Tasklutein browser workflow over the real FastAPI HTTP API", () => {
         body: JSON.stringify({ content: `Archive report page ${index}` }),
       });
       expect(report.status).toBe(201);
+      newestReportId = (await report.json() as { report: { id: string } }).report.id;
     }
+    const archivedComment = await nativeFetch(new URL(`/api/reports/${newestReportId}/comments`, apiOrigin), {
+      method: "POST", headers: { ...testHeaders(), "Content-Type": "application/json" }, body: JSON.stringify({ content: "Archived comment remains readable" }),
+    });
+    expect(archivedComment.status).toBe(201);
 
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
     fireEvent.click(screen.getByRole("button", { name: "删除任务" }));
@@ -289,6 +326,12 @@ describe("Tasklutein browser workflow over the real FastAPI HTTP API", () => {
     expect(screen.getAllByText(testEmail)).toHaveLength(actorNameCountBeforeReport + 25);
     expect(screen.queryByRole("button", { name: "编辑" })).toBeNull();
     expect(screen.queryByRole("button", { name: "添加汇报" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "评论" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "删除" })).toBeNull();
+    expect(browserRequests.some(({ method, url }) => method === "GET" && url.includes(`/api/reports/${newestReportId}/comments`))).toBe(false);
+    fireEvent.click((await screen.findAllByRole("button", { name: "查看评论" }))[0]!);
+    await screen.findByText("Archived comment remains readable");
+    expect(browserRequests.some(({ method, url }) => method === "GET" && url.includes(`/api/reports/${newestReportId}/comments`))).toBe(true);
 
     fireEvent.click(screen.getByRole("button", { name: "下一页汇报" }));
     await screen.findByText(initialReport);
@@ -447,7 +490,7 @@ describe("Tasklutein browser workflow over the real FastAPI HTTP API", () => {
     expect(screen.getByRole("button", { name: "上一页" }).hasAttribute("disabled")).toBe(false);
   });
 
-  it("creates, lists, displays once, and revokes a personal Agent key through real HTTP", async () => {
+  it("creates, lists, displays once, edits, and permanently deletes a personal Agent key", async () => {
     await enterWorkspace();
     fireEvent.click(screen.getAllByRole("link", { name: "设置" })[0]);
     await screen.findByRole("heading", { name: "设置" });
@@ -487,16 +530,13 @@ describe("Tasklutein browser workflow over the real FastAPI HTTP API", () => {
     expect(editedListing.tokens[0].expires_at).toEqual(expect.any(String));
     expect(JSON.stringify(editedListing)).not.toContain(secret);
 
-    fireEvent.click(await screen.findByRole("button", { name: "撤销" }));
-    await screen.findByText(/已撤销/);
-    const revokedRow = screen.getByText(displayPrefix ?? "").closest("li");
-    expect(revokedRow?.textContent).toContain("Renamed browser key");
-    expect(revokedRow?.textContent).toContain("已撤销");
-    expect(revokedRow?.querySelector("button")).toBeNull();
-    const revokedTokens = await nativeFetch(new URL("/api/agent-tokens", apiOrigin), { headers: testHeaders() });
-    const revokedListing = await revokedTokens.json() as { tokens: Array<{ id: string; revoked_at: string | null }> };
-    expect(revokedListing.tokens).toHaveLength(1);
-    expect(revokedListing.tokens[0]).toMatchObject({ id: listing.tokens[0].id, revoked_at: expect.any(String) });
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    fireEvent.click(await screen.findByRole("button", { name: "删除" }));
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("永久删除“Renamed browser key”"));
+    await screen.findByText("尚未创建 Agent 密钥。");
+    const deletedTokens = await nativeFetch(new URL("/api/agent-tokens", apiOrigin), { headers: testHeaders() });
+    const deletedListing = await deletedTokens.json() as { tokens: Array<{ id: string }> };
+    expect(deletedListing.tokens).toEqual([]);
   });
 
   it("shares the same FastAPI data and attribution through real HTTP MCP tools", async () => {

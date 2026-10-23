@@ -83,6 +83,16 @@ docker compose -f deploy/compose.yml --env-file deploy/.env up -d api mcp
 
 `0004_task_history` 为任务增加可空归档时间并创建活动表；既有任务仍是当前任务，迁移不会补造历史活动。迁移不会自动回退。首次归档后，回退版本必须继续过滤归档任务；不要通过 downgrade 或清除业务历史来恢复旧版本。
 
+升级已部署环境时，备份并确认目标环境后，构建包含当前迁移的 API 镜像，再应用后续迁移并更新 API/MCP：
+
+```sh
+docker compose -f deploy/compose.yml --env-file deploy/.env build api mcp
+docker compose -f deploy/compose.yml --env-file deploy/.env run --rm --no-deps api alembic upgrade head
+docker compose -f deploy/compose.yml --env-file deploy/.env up -d --no-deps api mcp
+```
+
+`0005_report_comments` 增加报告评论；`0006_agent_token_hard_delete` 允许物理删除 Agent 密钥，并在保留历史记录的同时清空关联密钥 ID。
+
 ## 发布、备份与恢复
 
 - `dev` 对应开发和 Preview，`main` 对应发布源码。跨环境数据、Token、Worker 回源和 Tunnel 配置必须相互隔离。

@@ -130,6 +130,35 @@ class ReportList(BaseModel):
     offset: int
 
 
+class ReportCommentCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    content: str = Field(min_length=1, max_length=2000)
+
+    @field_validator("content")
+    @classmethod
+    def clean_content(cls, content: str) -> str:
+        content = content.strip()
+        if not content:
+            raise ValueError("content must not be blank")
+        return content
+
+
+class ReportCommentView(BaseModel):
+    id: UUID
+    report_id: UUID
+    content: str
+    source: Literal["user", "agent"]
+    actor_name: str | None = None
+    created_at: datetime
+
+
+class ReportCommentList(BaseModel):
+    comments: list[ReportCommentView]
+    total: int
+    limit: int
+    offset: int
+
+
 class AgentTokenCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

@@ -15,14 +15,14 @@
 - **Personal workspaces:** visitors can browse the frontend preview; after Cloudflare Access sign-in, each user has a separate workspace.
 - **Task management:** create and edit tasks, then archive them or permanently delete their history; filter, search, sort, and paginate current tasks.
 - **Overview and history:** see current task totals and recent activity; browse read-only archived task snapshots and reports, and remove individual or grouped activity history.
-- **Progress reports:** add multiple reports to a task and distinguish user from Agent activity.
+- **Reports and comments:** add multiple reports to a task and flat comments to each report, with user and Agent attribution.
 - **MCP agents:** use a personal Agent key to read and update tasks and submit reports in its owner's workspace.
 
 ## Get started
 
 1. Open [Tasklutein](https://tasklutein.xswt.fyi) to browse the interface; sign in through Cloudflare Access to use a workspace.
 2. Create tasks, update their statuses, and record progress. When removing a task, archive it to keep its history or permanently delete the full history.
-3. To connect an Agent, open Settings, create a personal Agent key, and save the secret immediately. Its plaintext cannot be viewed again; you can edit its name or expiry and revoke it. Lists show only `tlu_` plus the next three key characters, and retain revoked keys with their status.
+3. To connect an Agent, open Settings, create a personal Agent key, and save the secret immediately. Its plaintext cannot be viewed again; you can edit its name or expiry and permanently delete it. Lists show only `tlu_` plus the next three key characters. Deletion removes the key record; related reports, comments, and activities remain without displaying that key's name.
 
 Tasklutein creates a workspace after Cloudflare Access verifies the user. Workspaces are isolated by Access issuer and user subject; current tasks, archived history, activity records, overview data, and Agent keys are scoped to their workspace.
 
@@ -38,6 +38,8 @@ Agents can use these tools:
 - `create_task`: create a task.
 - `update_task`: change a task title, description, or status.
 - `add_report`: add a progress report to a task.
+- `list_report_comments`: read a page of comments on a report.
+- `add_report_comment`: add a comment to a report.
 
 An Agent key can access only its owner's personal workspace. The server assigns report attribution from the verified session or key. An Agent report records activity; it does not mean the result was independently verified.
 

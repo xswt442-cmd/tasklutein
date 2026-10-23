@@ -160,7 +160,7 @@ afterAll(async () => {
 });
 
 describe("Tasklutein HTTP MCP with a real local FastAPI process", () => {
-  it("isolates personal keys, runs all six tools, and rejects revoked keys", async () => {
+  it("isolates personal keys, runs all eight tools, and rejects deleted keys", async () => {
     await mkdir(scratchDirectory, { recursive: true });
     databasePath = join(scratchDirectory, "mcp-integration-" + randomUUID() + ".sqlite");
     const databaseUrl = "sqlite:///" + databasePath.replaceAll("\\", "/");
@@ -228,7 +228,8 @@ describe("Tasklutein HTTP MCP with a real local FastAPI process", () => {
     const client = await connectMcp(mcpUrl, firstKey.secret);
     try {
       expect((await client.listTools()).tools.map((tool) => tool.name).sort()).toEqual([
-        "add_report", "create_task", "get_task", "list_reports", "list_tasks", "update_task",
+        "add_report", "add_report_comment", "create_task", "get_task", "list_report_comments",
+        "list_reports", "list_tasks", "update_task",
       ]);
 
       const created = await client.callTool({
@@ -246,6 +247,47 @@ describe("Tasklutein HTTP MCP with a real local FastAPI process", () => {
         name: "add_report", arguments: { task_id: taskId, content: "Verified through real FastAPI." },
       });
       expect(firstTextContent(report)).toContain("Verified through real FastAPI.");
+      const reportValue = JSON.parse(firstTextContent(report)) as { report?: { id?: string } };
+      const reportId = reportValue.report?.id;
+      expect(reportId).toMatch(/^[0-9a-f-]{36}$/i);
+      if (!reportId) throw new Error("add_report returned no report id");
+
+      const firstComment = await client.callTool({
+        name: "add_report_comment", arguments: { report_id: reportId, content: "Checked the reported result." },
+      });
+      const firstCommentValue = JSON.parse(firstTextContent(firstComment)) as {
+        comment?: { id?: string; report_id?: string; content?: string; source?: string; actor_name?: string; created_at?: string };
+      };
+      expect(firstCommentValue.comment).toMatchObject({
+        report_id: reportId,
+        content: "Checked the reported result.",
+        source: "agent",
+        actor_name: "MCP integration key one",
+      });
+      expect(firstCommentValue.comment?.id).toMatch(/^[0-9a-f-]{36}$/i);
+      expect(firstCommentValue.comment?.created_at).toBeTruthy();
+      await client.callTool({
+        name: "add_report_comment", arguments: { report_id: reportId, content: "Second comment." },
+      });
+
+      const comments = await client.callTool({
+        name: "list_report_comments", arguments: { report_id: reportId, limit: 1, offset: 0 },
+      });
+      expect(JSON.parse(firstTextContent(comments))).toMatchObject({
+        total: 2,
+        limit: 1,
+        offset: 0,
+        comments: [expect.objectContaining({ report_id: reportId, content: "Checked the reported result." })],
+      });
+      const nextCommentPage = await client.callTool({
+        name: "list_report_comments", arguments: { report_id: reportId, limit: 1, offset: 1 },
+      });
+      expect(JSON.parse(firstTextContent(nextCommentPage))).toMatchObject({
+        total: 2,
+        limit: 1,
+        offset: 1,
+        comments: [expect.objectContaining({ report_id: reportId, content: "Second comment." })],
+      });
 
       const detail = await client.callTool({ name: "get_task", arguments: { id: taskId } });
       const detailValue = JSON.parse(firstTextContent(detail)) as {
@@ -279,6 +321,13 @@ describe("Tasklutein HTTP MCP with a real local FastAPI process", () => {
 
       const otherClient = await connectMcp(mcpUrl, secondKey.secret);
       try {
+        const otherKeyComments = await otherClient.callTool({
+          name: "list_report_comments", arguments: { report_id: reportId, limit: 10, offset: 0 },
+        });
+        expect(JSON.parse(firstTextContent(otherKeyComments))).toMatchObject({
+          total: 2,
+          comments: expect.arrayContaining([expect.objectContaining({ content: "Checked the reported result." })]),
+        });
         const stillValid = await otherClient.callTool({ name: "list_tasks", arguments: { limit: 10, offset: 0 } });
         expect(JSON.parse(firstTextContent(stillValid))).toMatchObject({
           tasks: expect.arrayContaining([expect.objectContaining({ id: taskId })]),

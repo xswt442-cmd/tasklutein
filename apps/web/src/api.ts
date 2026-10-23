@@ -25,6 +25,15 @@ export type Page<T> = {
 };
 export type TaskPage = Omit<Page<Task>, "items"> & { tasks: Task[] };
 export type ReportPage = Omit<Page<Report>, "items"> & { reports: Report[] };
+export type ReportComment = {
+  id: string;
+  report_id: string;
+  content: string;
+  source: "user" | "agent";
+  actor_name: string | null;
+  created_at: string;
+};
+export type ReportCommentPage = Omit<Page<ReportComment>, "items"> & { comments: ReportComment[] };
 export type ActivityEventType = "task.created" | "task.updated" | "task.status_changed" | "task.deleted" | "report.created";
 export type ActivitySource = "user" | "agent";
 export type Activity = {
