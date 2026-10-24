@@ -5,11 +5,14 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 const previewWebUrl = new URL(process.env.TASKLUTEIN_PREVIEW_URL ?? "https://dev.preview.tasklutein.xswt.fyi");
 const previewMcpUrlValue = process.env.TASKLUTEIN_PREVIEW_MCP_URL;
 const previewAccessCookie = process.env.TASKLUTEIN_PREVIEW_ACCESS_COOKIE ?? "";
-const agentKey = process.env.TASKLUTEIN_PREVIEW_AGENT_KEY ?? "";
+const suppliedAgentKey = process.env.TASKLUTEIN_PREVIEW_AGENT_KEY ?? "";
+const previewWorkspaceId = process.env.TASKLUTEIN_PREVIEW_WORKSPACE_ID ?? "";
 const userAgent = "Tasklutein-Preview-E2E/1.0";
 
-if (!previewMcpUrlValue || !previewAccessCookie.includes("CF_Authorization=") || !agentKey.startsWith("tlu_")) {
-  console.error("Preview E2E needs a Web Access cookie, the dedicated MCP URL, and a personal Agent key in the current process environment.");
+if (!previewMcpUrlValue || !previewAccessCookie.includes("CF_Authorization=") ||
+    (suppliedAgentKey && !suppliedAgentKey.startsWith("tlu_")) ||
+    (previewWorkspaceId && !/^[0-9a-f-]{36}$/i.test(previewWorkspaceId))) {
+  console.error("Preview E2E needs a Web Access cookie and dedicated MCP URL; an optional workspace ID and Agent key can select a team workspace.");
   process.exit(1);
 }
 
@@ -21,6 +24,9 @@ if ([previewWebUrl, previewMcpUrl].some((url) => url.protocol !== "https:" || ur
 
 let stage = "initialize";
 let taskId;
+let agentKey = suppliedAgentKey;
+let temporaryAgentTokenName;
+let temporaryAgentTokenId;
 let createAttempted = false;
 let client;
 let failed = false;
@@ -48,6 +54,7 @@ async function webApiRequest(method, path, body, expectedStatus) {
       Origin: previewWebUrl.origin,
       Accept: "application/json",
       "User-Agent": userAgent,
+      ...(previewWorkspaceId ? { "X-Tasklutein-Workspace-ID": previewWorkspaceId } : {}),
       ...(body === undefined ? {} : { "Content-Type": "application/json" }),
     },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -65,6 +72,16 @@ async function webApiRequest(method, path, body, expectedStatus) {
 try {
   stage = "bootstrap Preview Web identity";
   await webApiRequest("POST", "/api/session/bootstrap", {}, 200);
+
+  if (!agentKey) {
+    stage = "create temporary workspace Agent key";
+    temporaryAgentTokenName = "[smoke-test] Preview E2E " + marker;
+    const token = await webApiRequest("POST", "/api/agent-tokens", {
+      name: temporaryAgentTokenName,
+    }, 201);
+    agentKey = token.secret;
+    temporaryAgentTokenId = token.token.id;
+  }
 
   stage = "create task with Preview Web identity";
   createAttempted = true;
@@ -120,8 +137,25 @@ try {
   stage = "call list_tasks";
   const taskList = await client.callTool({ name: "list_tasks", arguments: { q: marker } });
   const taskListText = taskList.content.find((item) => item.type === "text")?.text;
-  if (taskList.isError || !taskListText || !JSON.parse(taskListText).tasks.some((item) => item.id === taskId)) {
+  const taskListValue = taskListText ? JSON.parse(taskListText) : undefined;
+  const listedTask = taskListValue?.tasks.find((item) => item.id === taskId);
+  if (taskList.isError || !taskListText || !listedTask || listedTask.version !== task.version) {
     throw new Error("MCP task listing mismatch");
+  }
+
+  stage = "update task through MCP with the listed version";
+  const mcpUpdate = await client.callTool({
+    name: "update_task",
+    arguments: { id: taskId, expected_version: listedTask.version, description: "[smoke-test] MCP versioned update " + marker },
+  });
+  if (mcpUpdate.isError) throw new Error("MCP versioned task update failed");
+  const staleUpdate = await client.callTool({
+    name: "update_task",
+    arguments: { id: taskId, expected_version: listedTask.version, title: "[smoke-test] stale update " + marker },
+  });
+  const staleUpdateText = staleUpdate.content.find((item) => item.type === "text")?.text;
+  if (!staleUpdate.isError || !staleUpdateText?.includes("task_version_conflict")) {
+    throw new Error("MCP stale task update was not rejected");
   }
 
   stage = "call add_report";
@@ -197,6 +231,22 @@ try {
       }
     } catch {
       console.error("FAIL Preview E2E cleanup for the uniquely tagged task; inspect Preview before rerunning.");
+      failed = true;
+    }
+  }
+  if (temporaryAgentTokenName) {
+    try {
+      stage = "cleanup temporary Preview Agent key";
+      let tokenId = temporaryAgentTokenId;
+      if (!tokenId) {
+        const tokenList = await webApiRequest("GET", "/api/agent-tokens", undefined, 200);
+        const matches = tokenList.tokens.filter((token) => token.name === temporaryAgentTokenName);
+        if (matches.length > 1) throw new Error("ambiguous temporary Agent key match");
+        tokenId = matches[0]?.id;
+      }
+      if (tokenId) await webApiRequest("DELETE", "/api/agent-tokens/" + tokenId, undefined, 204);
+    } catch {
+      console.error("FAIL Preview E2E cleanup for temporary Agent key; inspect Preview Settings before rerunning.");
       failed = true;
     }
   }

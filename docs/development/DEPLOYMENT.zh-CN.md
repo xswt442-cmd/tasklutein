@@ -29,7 +29,7 @@ docker compose -f deploy/compose.yml --env-file deploy/.env.preview.example conf
 
 `npm run build:worker` 是 Wrangler dry-run；`docker compose config --quiet` 仅验证 Compose 配置。二者不会检查运行中的生产服务。
 
-`npx wrangler preview --name dev` 更新 Web Preview，`npx wrangler preview --name mcp` 更新其专用 MCP Preview；两者使用 `wrangler.jsonc` 中隔离的 `previews.vars`，不要对这些 hostname 运行 Production `wrangler deploy`。`npm run smoke:preview` 检查公开前端和健康检查、未认证 API/MCP 拒绝及源站拒绝；将 `TASKLUTEIN_PREVIEW_MCP_URL` 设置为专用 MCP Preview hostname。取得 Preview 当次授权并通过 One-time PIN 登录后，`npm run e2e:preview` 使用 `TASKLUTEIN_PREVIEW_ACCESS_COOKIE`、`TASKLUTEIN_PREVIEW_MCP_URL` 以及从设置创建的个人密钥 `TASKLUTEIN_PREVIEW_AGENT_KEY`。脚本创建唯一标记任务，通过 REST/MCP 写入 user/Agent 汇报，读取后删除任务。上述值不得写入文件或日志。脚本固定指向 Preview，不得提供 Production 凭据。失败时应先按脚本提示检查测试记录清理情况。
+`npx wrangler preview --name dev` 更新 Web Preview，`npx wrangler preview --name mcp` 更新其专用 MCP Preview；两者使用 `wrangler.jsonc` 中隔离的 `previews.vars`，不要对这些 hostname 运行 Production `wrangler deploy`。`npm run smoke:preview` 检查公开前端和健康检查、未认证 API/MCP 拒绝及源站拒绝；将 `TASKLUTEIN_PREVIEW_MCP_URL` 设置为专用 MCP Preview hostname。取得 Preview 当次授权并通过 One-time PIN 登录后，`npm run e2e:preview` 使用 `TASKLUTEIN_PREVIEW_ACCESS_COOKIE` 和 `TASKLUTEIN_PREVIEW_MCP_URL`；可用 `TASKLUTEIN_PREVIEW_WORKSPACE_ID` 选择已加入的团队工作区，或传入已有的 `TASKLUTEIN_PREVIEW_AGENT_KEY`。未提供 Agent 密钥时，脚本会创建并在测试后删除一个临时工作区密钥。脚本创建唯一标记任务，通过 REST/MCP 验证版本更新、冲突、汇报、评论和评审，然后删除测试任务与临时密钥。Cookie、密钥和工作区 ID 不得写入日志或提交。脚本固定指向 Preview，不得提供 Production 凭据。失败时应先按脚本提示检查测试记录清理情况。
 
 ## PostgreSQL 基线与迁移
 
