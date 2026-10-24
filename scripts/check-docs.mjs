@@ -16,9 +16,10 @@ const required = [
   "CHANGELOG.md",
   "docs/development/RELEASE.md",
   "scripts/release-notes.mjs",
-  ".github/workflows/check.yml",
-  ".github/workflows/release.yml",
+  ".github/workflows/ci.yml",
+  ".github/workflows/verify.yml",
   ".github/workflows/deploy.yml",
+  ".github/workflows/publish.yml",
 ];
 
 let failures = 0;
