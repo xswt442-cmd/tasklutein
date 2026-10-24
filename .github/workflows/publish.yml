@@ -1,4 +1,4 @@
-name: Release
+name: publish
 
 on:
   push:
@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref_name }}
+  group: ${{ github.workflow }}-${{ github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -17,7 +17,7 @@ jobs:
     uses: ./.github/workflows/verify.yml
 
   github-release:
-    name: Verify tagged source and publish notes
+    name: verify tagged source and publish notes
     needs: verify
     runs-on: ubuntu-24.04
     timeout-minutes: 25

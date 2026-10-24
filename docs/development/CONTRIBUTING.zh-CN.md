@@ -51,4 +51,4 @@ Alembic 基线：全新空 PostgreSQL 执行 `alembic upgrade head`。采用旧�
 
 ## 发布与回滚
 
-`.github/workflows/check.yml` 在 `dev` / `main` / PR 验证代码；`.github/workflows/release.yml` 在显式推送符合版本号、位于 `main` 历史中的 Tag 后校验并创建 GitHub Release，**不自动部署基础设施**。Worker 使用 `wrangler.jsonc` 和 `apps/web/dist` 部署到 Cloudflare；FastAPI、PostgreSQL、远程 MCP 部署到腾讯云 Docker。这两层必须分别显式发布并验收，具体流程见 [`RELEASE.md`](RELEASE.md)。当前没有自动 SSH/CD、数据库迁移执行器或 OAuth。部署前确认源站密钥、容器状态、备份和安全组，故障时应用与 Schema 分别回滚。
+`.github/workflows/ci.yml` 在 `dev` / `main` / PR 验证代码；`.github/workflows/publish.yml` 在显式推送符合版本号、位于 `main` 历史中的 Tag 后校验并创建 GitHub Release，**不自动部署基础设施**。Worker 使用 `wrangler.jsonc` 和 `apps/web/dist` 部署到 Cloudflare；FastAPI、PostgreSQL、远程 MCP 部署到腾讯云 Docker。这两层必须分别显式发布并验收，具体流程见 [`RELEASE.md`](RELEASE.md)。当前没有自动 SSH/CD、数据库迁移执行器或 OAuth。部署前确认源站密钥、容器状态、备份和安全组，故障时应用与 Schema 分别回滚。

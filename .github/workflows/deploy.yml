@@ -1,4 +1,4 @@
-name: Deploy Production Worker
+name: deploy production worker
 
 # Manual and separately authorized. Never deploy on merge or tag automatically.
 on:
@@ -18,7 +18,7 @@ jobs:
     uses: ./.github/workflows/verify.yml
 
   production:
-    name: Build, deploy and verify Cloudflare Worker
+    name: build, deploy and verify Cloudflare Worker
     needs: verify
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04

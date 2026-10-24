@@ -1,6 +1,6 @@
-name: Verify
+name: verify
 
-# Single owner of verification logic; called by check, deploy and release workflows.
+# Single owner of verification logic; called by the ci, deploy and publish workflows.
 on:
   workflow_call:
 
@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   web-worker-and-mcp:
-    name: Worker, React, MCP and docs
+    name: worker, react, mcp and docs
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
@@ -39,7 +39,7 @@ jobs:
         run: bash -n scripts/production-backup.sh scripts/production-restore-check.sh
 
   fastapi:
-    name: FastAPI tests and lint
+    name: fastapi tests and lint
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     services:
