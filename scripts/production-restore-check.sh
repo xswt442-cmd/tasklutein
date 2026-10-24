@@ -67,6 +67,9 @@ case "$revision" in
   0005_report_comments|0006_agent_token_hard_delete)
     required_tables=(activities agent_tokens alembic_version report_comments reports tasks users workspaces)
     ;;
+  0007_team_review_concurrency)
+    required_tables=(activities agent_tokens alembic_version report_comments report_reviews reports tasks users workspaces workspace_invitations workspace_members)
+    ;;
   *)
     echo "Unsupported restored Alembic revision: $revision" >&2
     exit 6
@@ -94,6 +97,15 @@ case "$revision" in
     comments="$(docker exec "$name" psql -U postgres -d postgres -At -c \
       'SELECT count(*) FROM public.report_comments')"
     counts="$counts,comments=$comments"
+    ;;
+  0007_team_review_concurrency)
+    counts="$(docker exec "$name" psql -U postgres -d postgres -At -c \
+      "SELECT 'tasks='||(SELECT count(*) FROM public.tasks)||',reports='||(SELECT count(*) FROM public.reports)||',activities='||(SELECT count(*) FROM public.activities)")"
+    comments="$(docker exec "$name" psql -U postgres -d postgres -At -c \
+      'SELECT count(*) FROM public.report_comments')"
+    team_data="$(docker exec "$name" psql -U postgres -d postgres -At -c \
+      "SELECT 'workspaces='||(SELECT count(*) FROM public.workspaces WHERE kind = 'team')||',members='||(SELECT count(*) FROM public.workspace_members)||',invitations='||(SELECT count(*) FROM public.workspace_invitations)||',reviews='||(SELECT count(*) FROM public.report_reviews)")"
+    counts="$counts,comments=$comments,$team_data"
     ;;
 esac
 
