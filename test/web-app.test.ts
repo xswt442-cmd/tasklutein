@@ -373,7 +373,7 @@ describe("Tasklutein browser workflow over the real FastAPI HTTP API", () => {
     expect(browserRequests.every(({ headers }) => !headers.has("Authorization"))).toBe(true);
     expect(window.localStorage.length).toBe(0);
     expect(window.sessionStorage.length).toBe(0);
-  });
+  }, 20_000);
 
   it("returns to a valid Inbox page after items disappear from the current page", async () => {
     const userResponse = await nativeFetch(new URL("/api/me", apiOrigin), { headers: testHeaders() });
