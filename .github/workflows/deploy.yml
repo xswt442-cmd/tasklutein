@@ -13,40 +13,32 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  verify:
+    if: github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/verify.yml
+
   production:
     name: Build, deploy and verify Cloudflare Worker
+    needs: verify
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     environment:
       name: production
       url: https://tasklutein.xswt.fyi
+    env:
+      # Suppress only the two known third-party deprecation codes emitted by the
+      # wrangler bundle during deployment; all other warnings stay visible.
+      NODE_OPTIONS: '--disable-warning=DEP0040 --disable-warning=DEP0169'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
           cache: npm
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-          cache: pip
-          cache-dependency-path: |
-            apps/api/requirements.txt
-            apps/api/requirements-dev.txt
-      - name: Install Python dependencies used by Web integration tests
-        run: python -m pip install -r apps/api/requirements-dev.txt
-      - name: Install uv for FastAPI-backed Vitest tests
-        run: python -m pip install uv==0.11.29
       - run: npm ci
-      - name: Verify source before deployment
-        run: npm run check
-      - name: Verify FastAPI tests and lint
-        run: |
-          python -m pytest -q
-          ruff check apps/api/app apps/api/tests
       - name: Check required GitHub Cloudflare credentials
         shell: bash
         env:
@@ -55,7 +47,7 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$CLOUDFLARE_API_TOKEN" || { echo "Configure production environment secret CLOUDFLARE_API_TOKEN"; exit 1; }
-          test -n "$CLOUDFLARE_ACCOUNT_ID" || { echo "Configure production environment variable CLOUDFLARE_ACCOUNT_ID"; exit 1; }
+          test -n "$CLOUDFLARE_ACCOUNT_ID" || { echo "Configure repository variable CLOUDFLARE_ACCOUNT_ID"; exit 1; }
       - name: Deploy Worker and static assets (preserve dashboard variables)
         shell: bash
         env:

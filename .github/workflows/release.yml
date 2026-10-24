@@ -6,37 +6,31 @@ on:
       - 'v*'
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref_name }}
   cancel-in-progress: false
 
 jobs:
+  verify:
+    uses: ./.github/workflows/verify.yml
+
   github-release:
     name: Verify tagged source and publish notes
+    needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
-          cache: npm
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-          cache: pip
-          cache-dependency-path: |
-            apps/api/requirements.txt
-            apps/api/requirements-dev.txt
-      - name: Install Python dependencies used by Web integration tests
-        run: python -m pip install -r apps/api/requirements-dev.txt
-      - name: Install uv for FastAPI-backed Vitest tests
-        run: python -m pip install uv==0.11.29
       - name: Verify tag, branch ancestry, and bilingual changelog
         shell: bash
         env:
@@ -51,18 +45,6 @@ jobs:
             echo "Release tag must point to an ancestor of main"
             exit 1
           }
-      - run: npm ci
-      - name: Verify Worker and MCP
-        run: npm run check
-      - name: Verify FastAPI
-        run: |
-          python -m pytest -q
-          ruff check apps/api/app apps/api/tests
-      - name: Generate bilingual GitHub Release from tagged CHANGELOG
-        shell: bash
-        env:
-          RELEASE_TAG: ${{ github.ref_name }}
-        run: node scripts/release-notes.mjs --changelog CHANGELOG.md --tag "$RELEASE_TAG" --manifest package.json > "$RUNNER_TEMP/release-notes.md"
       - name: Publish GitHub Release (no infrastructure deployment)
         shell: bash
         env:

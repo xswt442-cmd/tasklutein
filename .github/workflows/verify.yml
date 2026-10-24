@@ -1,0 +1,77 @@
+name: Verify
+
+# Single owner of verification logic; called by check, deploy and release workflows.
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  web-worker-and-mcp:
+    name: Worker, React, MCP and docs
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Suppress only the two known third-party deprecation codes emitted by the
+      # wrangler and typescript bundles during npm run check; all other warnings
+      # from our own code and tooling stay visible.
+      NODE_OPTIONS: '--disable-warning=DEP0040 --disable-warning=DEP0169'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install FastAPI for real HTTP browser-flow tests
+        run: python -m pip install -r apps/api/requirements-dev.txt
+      - name: Install uv for FastAPI-backed Vitest tests
+        run: python -m pip install uv==0.11.29
+      - run: npm ci
+      - name: Check TypeScript, MCP transports, docs, and Worker bundle
+        run: npm run check
+      - name: Check non-destructive PostgreSQL maintenance scripts syntax
+        run: bash -n scripts/production-backup.sh scripts/production-restore-check.sh
+
+  fastapi:
+    name: FastAPI tests and lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: tasklutein_test
+          POSTGRES_USER: tasklutein_test
+          POSTGRES_PASSWORD: tasklutein-${{ github.run_id }}-${{ github.run_attempt }}
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U tasklutein_test -d tasklutein_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TASKLUTEIN_TEST_DATABASE_URL: postgresql+psycopg://tasklutein_test:tasklutein-${{ github.run_id }}-${{ github.run_attempt }}@127.0.0.1:5432/tasklutein_test
+      TASKLUTEIN_TEST_DATABASE_NAME: tasklutein_test
+      TASKLUTEIN_ALLOW_POSTGRES_TEST_RESET: '1'
+      TASKLUTEIN_REQUIRE_POSTGRES: '1'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            apps/api/requirements.txt
+            apps/api/requirements-dev.txt
+      - run: python -m pip install -r apps/api/requirements-dev.txt
+      - run: python -m pytest -q
+      - run: ruff check apps/api/app apps/api/tests
