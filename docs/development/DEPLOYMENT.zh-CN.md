@@ -10,6 +10,8 @@ Production 和 Preview 使用独立的 Worker 配置、Tunnel、Compose 项目�
 
 为 Web hostname 的 `/api/*` 路径创建 Cloudflare Access 自托管应用，启用 One-time PIN 登录，并使用仅允许受邀邮箱的 Allow 策略；更具体的 `/api/health` 应用可允许公开健康检查。Web 根路径提供公开静态前端，游客仅能浏览不可操作的预览；`GET /api/session/login` 经 Access 验证后把浏览器重定向回首页。为两个 hostname 配置 Worker 路由。Production 的 `WEB_HOST`、`MCP_HOST`、`ACCESS_TEAM_DOMAIN`、`ACCESS_AUD` 和 `ORIGIN_URL` 由 Cloudflare 管理；`wrangler.jsonc` 的 `previews.vars` 为分支 Preview 提供隔离值，Preview 网关 Secret `ORIGIN_GATEWAY_TOKEN` 保存在 Previews Base。API 与 MCP 的 `EDGE_GATEWAY_TOKEN` 使用相同值。`WEB_ORIGINS` 设置为 Web 完整 Origin。MCP hostname 不加入浏览器 Access 应用：Worker 仅在该主机的精确 `/mcp` 路径接受个人 Agent 密钥，其余路径全部拒绝。向远程客户端开放前，为 MCP hostname 的 `/mcp` 路径配置 Cloudflare 速率限制规则。
 
+Web Access 应用的 `Session Duration` 设置为 30 天；对应 Allow Policy 使用 `Same as application` 或相同的 30 天时长。全局 Access 会话时长保持不变。30 天应用会话可减少重复 OTP 登录，但会延长有效 Cookie 暴露后的访问时间；退出、到期或清除 Cookie 后需重新认证。
+
 不要将网关密钥或 Agent 密钥写入 Git、前端 `VITE_*` 变量或日志。每个用户在设置中创建自己的 Agent 密钥，MCP 服务不使用共享 Agent 凭据。
 
 ## 本地检查与 Preview 烟测

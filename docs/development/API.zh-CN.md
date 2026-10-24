@@ -6,20 +6,22 @@
 
 Web 和远程 MCP 使用各自配置的 Cloudflare Worker hostname。Web 主机提供静态页面和 `/api/*`；MCP 主机只提供精确路径 `/mcp`，该主机上的其他路径返回 `404`。Web 主机上的 `/mcp` 不会转发到 MCP Server。使用部署配置中的 `<web-host>` 和 `<mcp-host>`，不要将两种入口混为一个 URL。
 
-网页前端可由游客浏览，游客界面不请求工作区数据，也不提供业务操作。Web API 路径 `/api/*` 由 Cloudflare Access 保护。Worker 验证 Access JWT 后，将签发方、subject 和已验证邮箱作为内部身份 Header 转发给 FastAPI，并移除客户端伪造的同名 Header。除 `GET /api/health` 外，Web API 要求已建立的用户身份；登录后的 `POST /api/session/bootstrap` 建立或读取用户和个人工作区。`GET /api/session/login` 是 Worker 提供的 Access 登录入口，验证后重定向到首页。浏览器不发送业务 Bearer Token。
+网页前端可由游客浏览，游客界面不请求工作区数据，也不提供业务操作。Web API 路径 `/api/*` 由 Cloudflare Access 保护。Worker 验证 Access JWT 后，将签发方、subject 和已验证邮箱作为内部身份 Header 转发给 FastAPI，并移除客户端伪造的同名 Header。除 `GET /api/health` 外，Web API 要求已建立的用户身份；登录后的 `POST /api/session/bootstrap` 建立或读取用户和默认个人工作区。`GET /api/session/login` 是 Worker 提供的 Access 登录入口，验证后重定向到首页。浏览器不发送业务 Bearer Token。
 
-远程 MCP 客户端将个人 Agent 密钥作为 `Authorization: Bearer <AGENT_KEY>` 发送到 `https://<mcp-host>/mcp`。MCP Server 用该密钥调用 FastAPI；密钥对应的用户与个人工作区决定其可见数据。客户端不得提供 `X-Tasklutein-Gateway` 或内部身份 Header。Worker 注入 `ORIGIN_GATEWAY_TOKEN` 对应的网关 Header；FastAPI 与 MCP HTTP 通过 `EDGE_GATEWAY_TOKEN` 校验。
+Web Cloudflare Access 应用的会话时长为 30 天，Allow Policy 继承应用时长；全局 Access 会话时长不变。浏览器保留有效 Cookie 时，重新打开网站可复用会话；会话到期、主动退出或删除 Cookie 后需重新认证。
 
-`GET /api/health` 不要求用户身份；`GET /api/ready` 要求已建立的 Web 身份或有效 Agent 密钥。除健康检查外，所有业务接口只读取或修改调用者工作区的数据。另一工作区中的任务按 `404` 处理。
+远程 MCP 客户端将 Agent 密钥作为 `Authorization: Bearer <AGENT_KEY>` 发送到 `https://<mcp-host>/mcp`。每个密钥固定绑定创建时选定的个人或团队工作区；MCP Server 用该密钥调用 FastAPI，服务端每次请求检查密钥创建者仍是该工作区成员。客户端不得提供 `X-Tasklutein-Gateway` 或内部身份 Header。Worker 注入 `ORIGIN_GATEWAY_TOKEN` 对应的网关 Header；FastAPI 与 MCP HTTP 通过 `EDGE_GATEWAY_TOKEN` 校验。
 
-## 会话与个人 Agent 密钥
+`GET /api/health` 不要求用户身份；`GET /api/ready` 要求已建立的 Web 身份或有效 Agent 密钥。除健康检查外，所有业务接口只读取或修改调用者当前工作区的数据。网页请求可通过 `X-Tasklutein-Workspace-ID` 选择已加入的工作区；FastAPI 每次根据成员关系授权，不能靠 Header 获得额外权限。无该 Header 时使用个人工作区。Agent 密钥固定在其所属工作区，不能通过 Header 切换。另一工作区中的任务按 `404` 处理。
+
+## 会话与工作区 Agent 密钥
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | POST | `/api/session/bootstrap` | 根据 Worker 验证的 Access 身份建立或返回用户及个人工作区 |
 | GET | `/api/me` | 返回当前用户及工作区；需要已建立的 Web 身份 |
 | GET | `/api/agent-tokens` | 列出当前工作区的 Agent 密钥元数据 |
-| POST | `/api/agent-tokens` | 创建个人 Agent 密钥 |
+| POST | `/api/agent-tokens` | 为当前工作区创建 Agent 密钥 |
 | PATCH | `/api/agent-tokens/{uuid}` | 修改未撤销密钥的名称或到期时间 |
 | DELETE | `/api/agent-tokens/{uuid}` | 永久删除当前工作区的密钥 |
 | GET | `/api/agent/whoami` | 校验 Agent 密钥并返回其用户、工作区和密钥标识 |
@@ -27,6 +29,24 @@ Web 和远程 MCP 使用各自配置的 Cloudflare Worker hostname。Web 主机�
 `POST /api/agent-tokens` 接受 `{"name":"Build agent","expires_at":null}`。`name` 长度为 1–80 个字符；可选的 `expires_at` 必须是带时区且在未来的时间。成功返回 `201`，包含一次性明文 `secret` 和不含明文的 `token` 元数据。服务端只保存密钥摘要和显示前缀；明文只在创建响应中出现，之后不能通过 API 再次读取。元数据中的 `prefix` 固定为 `tlu_` 加密钥后 3 个字符；列表和更新响应不包含其余密钥字符、明文或摘要。列表包含 `id`、`name`、`prefix`、创建时间、到期时间和撤销时间；升级前已撤销的密钥仍会列出，直到用户删除。`PATCH` 可分别更新 `name` 和 `expires_at`；将 `expires_at` 设为 `null` 表示永不过期。只有当前工作区的未撤销密钥可以更新；已撤销密钥返回 `409`，其他工作区的密钥返回 `404`。`DELETE` 永久删除密钥行并返回 `204`；重复删除返回 `404`。关联的汇报、评论和活动保留，`agent_token_id` 置空，因此历史记录不再显示该密钥名称。
 
 Agent 密钥只允许在 MCP 身份验证和 MCP 所调用的 API 中使用。通过 Web hostname 发起的 `/api/*` 请求按 Web 身份认证；该 hostname 不提供使用 Agent Bearer 密钥的公共 REST 登录方式。
+
+## 工作区、邀请与成员
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/workspaces` | 列出当前用户所属工作区及角色 |
+| POST | `/api/workspaces` | 创建团队工作区；创建者为 Owner |
+| GET | `/api/workspaces/{workspace_id}/members` | 查看团队成员 |
+| GET | `/api/workspaces/{workspace_id}/invitations` | Owner 查看团队邀请 |
+| POST | `/api/workspaces/{workspace_id}/invitations` | Owner 邀请已注册用户 |
+| GET | `/api/invitations` | 列出发给当前用户的邀请 |
+| POST | `/api/invitations/{invitation_id}/accept` | 接受邀请并加入团队 |
+| POST | `/api/invitations/{invitation_id}/decline` | 拒绝邀请 |
+| DELETE | `/api/workspaces/{workspace_id}/members/{user_id}` | Owner 移除成员 |
+
+邀请请求体为 `{"email":"member@example.com"}`；邀请目标必须是已有 Tasklutein 账户，不会发送邮件或创建账户。团队角色为 `owner` 和 `member`：Owner 可邀请或移除成员，团队成员可使用工作区任务、报告、评论和评审。当前不支持角色变更、Owner 退出或删除团队。被移除成员立即失去团队访问权；其团队 Agent 密钥因创建者不再是成员而立即失效。若成员是任务负责人，移除操作会在同一事务中清空负责人、递增相应任务版本并记录活动。
+
+网页请求可通过 `X-Tasklutein-Workspace-ID` 选择工作区。FastAPI 每次根据成员关系授权，不能靠 Header 获得额外权限；无该 Header 时使用个人工作区。Agent 密钥固定绑定创建时选定的工作区，不能通过 Header 切换。Worker 只透传该工作区选择 Header，并继续移除伪造的内部身份 Header。
 
 ## 任务 REST API
 
@@ -38,7 +58,8 @@ Agent 密钥只允许在 MCP 身份验证和 MCP 所调用的 API 中使用。�
 | GET | `/api/tasks` | 筛选并分页查询当前工作区任务 |
 | POST | `/api/tasks` | 在当前工作区创建任务 |
 | GET | `/api/tasks/{uuid}` | 查询当前工作区中的任务 |
-| PATCH | `/api/tasks/{uuid}` | 修改标题、说明或状态 |
+| PATCH | `/api/tasks/{uuid}` | 携带版本修改标题、说明、状态或负责人 |
+| GET | `/api/inbox` | 分页查看分配给当前用户的任务和待评审汇报 |
 | DELETE | `/api/tasks/{uuid}?history=keep` | 归档任务并保留任务快照、汇报和活动 |
 | DELETE | `/api/tasks/{uuid}?history=delete` | 物理删除任务、汇报和活动 |
 
@@ -49,6 +70,12 @@ Agent 密钥只允许在 MCP 身份验证和 MCP 所调用的 API 中使用。�
 ```
 
 状态合法值：`todo`、`in_progress`、`done`。成功创建返回 `201` 和 `{"task":...}`；列表返回 `{"tasks":[],"total":0,"limit":25,"offset":0}`；详情与更新返回 `{"task":...}`；删除成功返回 `204`。不合法字段返回 `422`，当前工作区中不存在的任务返回 `404`。`done` 是任务状态，不表示归档。
+
+任务创建时的 `version` 为 `1`；详情、列表、创建与更新响应均返回当前版本。`PATCH` 必须在 JSON 请求体中提供读取时的 `expected_version`，例如 `{"title":"Fix release workflow","expected_version":1}`。缺少该字段返回 `428 expected_version_required`；版本已变化时返回 `409 task_version_conflict`，并在响应的 `latest_task` 中提供服务器当前任务。调用者应保留自己的输入，读取该任务并比较后再决定是否提交，服务器不会自动覆盖或重试。无实际字段变化时版本、更新时间和活动均不变；成功修改时字段变化、版本递增和活动在一个事务中提交。
+
+可选负责人字段为 `assignee_user_id`，值必须是当前工作区成员 ID，传 `null` 表示清除负责人。列表参数 `assignee` 可为 `me`、`unassigned` 或当前工作区成员 UUID。负责人移除时版本会递增，以便正在编辑同一任务的客户端发现冲突。
+
+`GET /api/inbox` 接受 `limit`（1–100，默认 20）和非负 `offset`，按更新时间分页返回 `tasks` 与 `reports`：任务列表包含分配给当前用户的未归档任务；汇报列表针对当前工作区内其他操作者在每个任务提交的最新汇报，排除当前用户已评审的记录。它是查询入口，不发送通知。
 
 当前任务接口、Overview、搜索和 MCP 任务工具只包含 `archived_at` 为空的任务。归档任务只能通过历史接口读取；通过当前任务或报告接口访问归档任务，以及访问其他工作区的任务，均返回 `404`。
 
@@ -74,6 +101,15 @@ Agent 密钥只允许在 MCP 身份验证和 MCP 所调用的 API 中使用。�
 评论删除不可恢复。物理删除报告、任务或整组历史时，关联评论随报告级联删除。评论的创建和删除不产生活动，也不更改任务 `updated_at`。
 
 请求体仅允许 `{"content":"..."}`。报告 `source`、用户归属和 Agent 密钥归属由 FastAPI 根据已验证身份写入，不接受客户端指定。创建响应的 `actor_name` 使用本次已验证身份的邮箱或 Agent Key 名称；后续读取会根据保存的操作者 ID 解析关联记录的当前邮箱或名称。改名或邮箱同步会改变既有报告的显示名称；系统不保存操作发生时的名称快照。迁移前缺少操作者归属的旧报告返回 `null`，界面只显示 `source`。汇报可接收 `limit`（1–100）与非负 `offset`；省略 `limit` 时最多返回 100 条。结果按 `created_at` 降序、再按 UUID 降序排序，响应包含 `total`、`limit` 和 `offset`。追加报告不会更改任务的 `updated_at`。
+
+## 汇报评审 REST API
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/reports/{report_id}/reviews` | 读取当前工作区报告的成员评审；用户和 Agent 均可读 |
+| PUT | `/api/reports/{report_id}/review` | 创建或更新当前 Web 用户自己的评审 |
+
+评审请求接受 `score`（1–5 整数）、`verdict`（`approved` 或 `needs_work`）及可选 `note`（最多 1000 字符）。每位用户对同一报告只有一条评审，重复提交更新该记录。只有当前工作区的人类成员能写评审；Agent 只能读取。归档报告仍可读评审，但不能新增或更新。评审响应包含评审者、评分、判定、评语及创建和更新时间；不计算积分榜，也不提供删除评审的 API。评审不会改变任务版本或 `updated_at`；删除报告时评审通过外键级联清理。
 
 ## 历史与活动 REST API
 
@@ -106,9 +142,10 @@ Agent 密钥只允许在 MCP 身份验证和 MCP 所调用的 API 中使用。�
 | `list_reports` | task_id（UUID）、可选 limit/offset | 分页读取该工作区任务的汇报 |
 | `get_task` | id（UUID） | 读取任务及其默认第一页汇报 |
 | `create_task` | title、可选 description | 在密钥所属工作区新建任务 |
-| `update_task` | id、可选 title/description/status | 修改该工作区任务 |
+| `update_task` | id、expected_version、可选 title/description/status/assignee_user_id | 按读取时版本修改任务及负责人；冲突后 Agent 应重读并比较 |
 | `add_report` | task_id、content | 追加 Agent 汇报 |
 | `list_report_comments` | report_id（UUID）、可选 limit/offset | 分页读取该工作区报告的评论 |
+| `list_report_reviews` | report_id（UUID） | 读取该工作区报告的人类评审；Agent 只读 |
 | `add_report_comment` | report_id（UUID）、content | 为该工作区的当前报告添加 Agent 评论 |
 
 可选本地 stdio MCP 适配器使用 `TASKLUTEIN_API_TOKEN` 配置个人 Agent 密钥，并通过 FastAPI REST API 访问当前工作区。现有任务 MCP 工具只处理当前任务，不返回或修改归档任务。
@@ -117,4 +154,4 @@ API 声明请求体超过 64 KiB 时返回 `413`；MCP 使用独立的 1 MiB 请
 
 ## 数据库升级兼容性
 
-迁移不会随 API 启动自动执行。旧库升级时，先应用 `0002_identity_workspace`，让目标用户通过 Cloudflare Access 登录并建立个人工作区，再依次应用 `0003_task_workspace_required`、`0004_task_history`、`0005_report_comments` 和 `0006_agent_token_hard_delete`。若仍有旧共享工作区遗留的未归属任务，维护者须显式提供该用户的 Access issuer、subject、email 及确认值 `assign-existing-tasks`。迁移将所有未归属任务及其关联汇报保留到该单一工作区，不会推断或拆分归属。`0004_task_history` 将既有任务视为当前任务，不补造历史活动。`0006_agent_token_hard_delete` 允许永久移除密钥，同时保留汇报、评论和活动，并清空其中指向该密钥的外键。首次归档后，旧版若忽略 `archived_at` 会重新显示归档任务，因此回退必须保留归档过滤与工作区隔离；移除历史 schema 需另行审查。完整迁移要求见[架构文档](ARCHITECTURE.zh-CN.md)。
+迁移不会随 API 启动自动执行。旧库升级时，先应用 `0002_identity_workspace`，让目标用户通过 Cloudflare Access 登录并建立个人工作区，再依次应用 `0003_task_workspace_required`、`0004_task_history`、`0005_report_comments`、`0006_agent_token_hard_delete` 和 `0007_team_review_concurrency`。若仍有旧共享工作区遗留的未归属任务，维护者须显式提供该用户的 Access issuer、subject、email 及确认值 `assign-existing-tasks`。迁移将所有未归属任务及其关联汇报保留到该单一工作区，不会推断或拆分归属。`0004_task_history` 将既有任务视为当前任务，不补造历史活动。`0007_team_review_concurrency` 将既有空间标记为个人空间、为其 Owner 回填成员关系，并为现有任务初始化版本；既有任务、汇报、评论、活动、Agent Key 和关联 ID 保持不变。完成迁移后，可创建团队工作区和评审记录。`0006_agent_token_hard_delete` 允许永久移除密钥，同时保留汇报、评论和活动，并清空其中指向该密钥的外键。首次归档后，旧版若忽略 `archived_at` 会重新显示归档任务，因此回退必须保留归档过滤与工作区隔离；移除历史 schema 需另行审查。完整迁移要求见[架构文档](ARCHITECTURE.zh-CN.md)。

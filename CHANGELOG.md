@@ -11,13 +11,20 @@ This file records shipped features, fixes, compatibility changes, and upgrade re
 **新增**
 - 每条进度汇报支持工作区范围内的平面评论；Web 用户和 Agent 可读取、添加评论，只有 Web 用户可删除。评论不产生活动或修改任务更新时间，删除报告或任务时评论随之清除。
 - MCP 新增 `list_report_comments` 和 `add_report_comment` 工具。
+- 支持团队工作区、已注册用户邀请与成员管理；可按工作区分配任务，并在“待我处理”中查看待办任务和待评审汇报。
+- 支持人类成员评分和验收工作汇报；MCP Agent 可读取评审但不能代人评分。
+- 任务更新带有版本检查；MCP 新增 `list_report_reviews`，任务工具返回版本供 Agent 在更新时提交。
 
 **改进**
 - 游客可以浏览不可操作的前端预览；仅 `/api/*` 要求 Cloudflare Access 登录，已登录用户仍可使用原有工作区功能。
 - Agent 密钥现在可永久删除并立即失效；关联汇报、评论和活动保留，但解除与该密钥的关联。
+- Agent 密钥固定绑定到创建时选定的工作区；移除成员会立即使其在该团队创建的密钥失效，并安全清理其任务负责人。
+
+**兼容性**
+- `PATCH /api/tasks/{id}` 现在必须包含 `expected_version`；缺少版本返回 `428`，过期版本返回 `409 task_version_conflict`。MCP `update_task` 同样要求该参数，调用方应在冲突后重新读取并比较。
 
 **升级说明**
-- 现有数据库需在前置迁移后依次应用 `0005_report_comments` 和 `0006_agent_token_hard_delete`；迁移不会随 API 启动自动运行，`0005_report_comments` 不支持降级。
+- 现有数据库需在前置迁移后依次应用 `0005_report_comments`、`0006_agent_token_hard_delete` 和 `0007_team_review_concurrency`；该迁移保留现有工作区和业务记录，将旧工作区标记为个人空间、回填 Owner 成员，并将既有任务版本初始化为 `1`。迁移不会随 API 启动自动运行，`0005_report_comments` 不支持降级。
 - 升级前已撤销的 Agent 密钥会继续列出，直到用户删除。
 
 ### English
@@ -25,13 +32,20 @@ This file records shipped features, fixes, compatibility changes, and upgrade re
 **Added**
 - Add workspace-scoped flat comments to progress reports. Web users and Agents can read and add comments; only Web users can delete them. Comments do not create activity or update task timestamps, and are removed with their report or task.
 - Add the MCP tools `list_report_comments` and `add_report_comment`.
+- Add team workspaces, invitations for registered users, and membership management; tasks can be assigned within a workspace, and the Inbox lists assigned work and reports awaiting review.
+- Let human workspace members score and review reports; MCP Agents can read reviews but cannot score on a person's behalf.
+- Add optimistic task versions and expose them in task responses; add the MCP tool `list_report_reviews`.
 
 **Improved**
 - Guests can browse a non-interactive frontend preview; Cloudflare Access protects only `/api/*`, while signed-in users retain the existing workspace features.
 - Agent keys can now be permanently deleted and immediately disabled; associated reports, comments, and activities remain with their key references cleared.
+- Agent keys are bound to the workspace selected at creation. Removing a member immediately invalidates their key for that team and safely clears their task assignments.
+
+**Compatibility**
+- `PATCH /api/tasks/{id}` now requires `expected_version`; a missing version returns `428`, and a stale version returns `409 task_version_conflict`. MCP `update_task` requires the same parameter, and callers should reread and compare after a conflict.
 
 **Upgrade notes**
-- For an existing database, apply `0005_report_comments` and then `0006_agent_token_hard_delete` after the prerequisite migrations. Migrations do not run automatically when the API starts, and `0005_report_comments` does not support downgrade.
+- For an existing database, apply `0005_report_comments`, `0006_agent_token_hard_delete`, and `0007_team_review_concurrency` in order after the prerequisite migrations. The last migration preserves existing workspaces and business records, marks old workspaces as personal, backfills Owner memberships, and initializes existing task versions to `1`. Migrations do not run automatically when the API starts, and `0005_report_comments` does not support downgrade.
 - Agent keys revoked before the upgrade remain listed until the user deletes them.
 
 ## [0.1.2] - 2026-10-19

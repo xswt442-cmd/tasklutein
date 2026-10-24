@@ -41,9 +41,9 @@ $env:TASKLUTEIN_ALLOW_POSTGRES_TEST_RESET = '1'
 python -m pytest -q
 ```
 
-测试夹具会核对 URL 中的本机主机和 `*_test` 数据库名，并要求显式允许重置；随后会删除该数据库中的 Tasklutein 表。不得指向 Production 或 Preview。API 测试覆盖用户和 Agent 鉴权、工作区隔离、汇报归属、密钥撤销、网关验证、Origin 校验、筛选、分页和统计。PostgreSQL 测试验证并发首次登录只创建一个用户/工作区、Alembic 升级、受控旧任务归属及任务/汇报保留、活动事务回滚、归档快照、历史清理范围和报告写入与归档/删除之间的并发结果。SQLite 成功不能证明 Docker、Tunnel 或在线服务部署正常。
+测试夹具会核对 URL 中的本机主机和 `*_test` 数据库名，并要求显式允许重置；随后会删除该数据库中的 Tasklutein 表。不得指向 Production 或 Preview。API 测试覆盖个人/团队隔离、已注册用户邀请与接受、成员移除和 Agent Key 权限、负责人校验与清理、报告评审权限和级联、乐观锁错误及事务回滚。PostgreSQL 测试验证 Alembic 升级、旧数据保留、并发首次登录、相同任务版本的并发写入、成员移除与负责人修改竞态，以及报告/归档/删除和历史清理之间的事务结果。SQLite 不实现 PostgreSQL 行锁，SQLite 成功不能证明并发语义正确，也不能证明 Docker、Tunnel 或在线服务部署正常。
 
-Alembic 基线：全新空 PostgreSQL 执行 `alembic upgrade head`。采用旧版 `apps/api/migrations/0001_init.sql` 建立的数据库必须先检查并确认符合 `0001_baseline`，再由维护者运行 `alembic stamp 0001_baseline`。已有共享工作区先应用 `0002_identity_workspace`，让维护者指定的旧数据归属用户通过 Cloudflare Access 建立工作区，然后设置迁移要求的目标身份与确认值，执行 `0003_task_workspace_required`。不得给未核对的数据库直接 stamp，也不在应用启动时自动执行迁移。
+Alembic 基线：全新空 PostgreSQL 执行 `alembic upgrade head`。采用旧版 `apps/api/migrations/0001_init.sql` 建立的数据库必须先检查并确认符合 `0001_baseline`，再由维护者运行 `alembic stamp 0001_baseline`。已有共享工作区先应用 `0002_identity_workspace`，让维护者指定的旧数据归属用户通过 Cloudflare Access 建立工作区，然后设置迁移要求的目标身份与确认值，执行 `0003_task_workspace_required`，再依次升级到 `0007_team_review_concurrency`。该迁移保留既有业务行和 ID，将旧工作区转为 personal 并回填 Owner 成员，任务版本从 `1` 开始。不得给未核对的数据库直接 stamp，也不在应用启动时自动执行迁移。
 
 ## 文档与安全
 

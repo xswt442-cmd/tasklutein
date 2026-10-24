@@ -6,20 +6,22 @@ English · [简体中文](API.zh-CN.md)
 
 Web and remote MCP use separate Cloudflare Worker hostnames. The Web host serves static pages and `/api/*`; the MCP host serves only the exact `/mcp` path, with other paths returning `404`. `/mcp` on the Web host is not forwarded to the MCP server. Use the configured `<web-host>` and `<mcp-host>` values; the two entry points have different URLs.
 
-Guests can browse the Web frontend, but the guest view does not request workspace data or expose business operations. Cloudflare Access protects the `/api/*` Web API path. After verifying the Access JWT, the Worker forwards its issuer, subject, and verified email to FastAPI in internal identity headers, removing any client-supplied headers with those names. Except for `GET /api/health`, the Web API requires an established user identity; after sign-in, `POST /api/session/bootstrap` creates or reads the user and personal workspace. `GET /api/session/login` is a Worker-provided Access login entry that redirects to the home page after authentication. The browser does not send a business Bearer token.
+Guests can browse the Web frontend, but the guest view does not request workspace data or expose business operations. Cloudflare Access protects the `/api/*` Web API path. After verifying the Access JWT, the Worker forwards its issuer, subject, and verified email to FastAPI in internal identity headers, removing any client-supplied headers with those names. Except for `GET /api/health`, the Web API requires an established user identity; after sign-in, `POST /api/session/bootstrap` creates or reads the user and default personal workspace. `GET /api/session/login` is a Worker-provided Access login entry that redirects to the home page after authentication. The browser does not send a business Bearer token.
 
-Remote MCP clients send a personal Agent key as `Authorization: Bearer <AGENT_KEY>` to `https://<mcp-host>/mcp`. The MCP server uses that key for FastAPI calls; the key's user and personal workspace determine its data scope. Clients must not send `X-Tasklutein-Gateway` or internal identity headers. The Worker injects the gateway header matching `ORIGIN_GATEWAY_TOKEN`; FastAPI and HTTP MCP verify it using `EDGE_GATEWAY_TOKEN`.
+The Web Access applications use a 30-day application session, with their Allow Policies inheriting that duration. The global Cloudflare Access session duration is unchanged. A valid retained cookie can be reused when reopening the site; expiry, explicit sign-out, or cookie removal requires authentication again.
 
-`GET /api/health` does not require user identity. `GET /api/ready` requires an established Web identity or a valid Agent key. All business endpoints read or modify only the caller's workspace. A task in another workspace is treated as missing and returns `404`.
+Remote MCP clients send an Agent key as `Authorization: Bearer <AGENT_KEY>` to `https://<mcp-host>/mcp`. Each key is bound to the personal or team workspace selected when it was created; the MCP server uses it for FastAPI calls, and the server checks on every request that its creator remains a workspace member. Clients must not send `X-Tasklutein-Gateway` or internal identity headers. The Worker injects the gateway header matching `ORIGIN_GATEWAY_TOKEN`; FastAPI and HTTP MCP verify it using `EDGE_GATEWAY_TOKEN`.
 
-## Session and Personal Agent Keys
+`GET /api/health` does not require user identity. `GET /api/ready` requires an established Web identity or a valid Agent key. All business endpoints read or modify only the caller's current workspace. Browser requests may select a joined workspace with `X-Tasklutein-Workspace-ID`; FastAPI checks membership on every request, so the header cannot grant access by itself. Without it, the personal workspace is selected. Agent keys remain bound to their workspace and cannot switch through this header. A task in another workspace is treated as missing and returns `404`.
+
+## Session and Workspace-bound Agent Keys
 
 | Method | Path | Description |
 | --- | --- | --- |
 | POST | `/api/session/bootstrap` | Create or return the user and personal workspace from the identity verified by the Worker |
 | GET | `/api/me` | Return the current user and workspace; requires an established Web identity |
 | GET | `/api/agent-tokens` | List Agent-key metadata for the current workspace |
-| POST | `/api/agent-tokens` | Create a personal Agent key |
+| POST | `/api/agent-tokens` | Create an Agent key for the current workspace |
 | PATCH | `/api/agent-tokens/{uuid}` | Update the name or expiry of an active key |
 | DELETE | `/api/agent-tokens/{uuid}` | Permanently delete a key in the current workspace |
 | GET | `/api/agent/whoami` | Validate an Agent key and return its user, workspace, and key identifiers |
@@ -27,6 +29,24 @@ Remote MCP clients send a personal Agent key as `Authorization: Bearer <AGENT_KE
 `POST /api/agent-tokens` accepts `{"name":"Build agent","expires_at":null}`. `name` must contain 1–80 characters. Optional `expires_at` must be a future timestamp with a timezone. Success returns `201` with a one-time plaintext `secret` and `token` metadata that does not contain the secret. The server stores only a digest and display prefix; plaintext appears only in the create response and cannot be retrieved through the API later. Metadata `prefix` is limited to `tlu_` plus the first three key characters; list and update responses contain no remaining key characters, plaintext, or digest. The list includes `id`, `name`, `prefix`, creation time, expiry, and revocation time; keys revoked before this migration remain listed until deleted. `PATCH` can update `name` and `expires_at` independently; setting `expires_at` to `null` means no expiry. Only active keys in the current workspace can be updated; revoked keys return `409`, and keys outside the workspace return `404`. `DELETE` physically removes the key row and returns `204`; repeated deletion returns `404`. Associated reports, comments, and activities remain, with `agent_token_id` set to `null`, so historical records no longer show that key's name.
 
 Agent keys are for MCP identity validation and the API calls made by MCP. Requests to `/api/*` through the Web hostname use Web identity authentication; that hostname does not provide a public REST login using Agent Bearer keys.
+
+## Workspaces, Invitations, and Membership
+
+| Method | Path | Description |
+| --- | --- | --- |
+| GET | `/api/workspaces` | List workspaces and the current user's role in each |
+| POST | `/api/workspaces` | Create a team workspace; the creator is its Owner |
+| GET | `/api/workspaces/{workspace_id}/members` | List team members |
+| GET | `/api/workspaces/{workspace_id}/invitations` | List invitations as the team Owner |
+| POST | `/api/workspaces/{workspace_id}/invitations` | Invite a registered user as the team Owner |
+| GET | `/api/invitations` | List invitations addressed to the current user |
+| POST | `/api/invitations/{invitation_id}/accept` | Accept an invitation and join the team |
+| POST | `/api/invitations/{invitation_id}/decline` | Decline an invitation |
+| DELETE | `/api/workspaces/{workspace_id}/members/{user_id}` | Remove a member as the Owner |
+
+Invitation bodies use `{"email":"member@example.com"}`. The invitee must already have a Tasklutein account; the API does not send email or create accounts. Team roles are `owner` and `member`: Owners can invite or remove members, while team members can use workspace tasks, reports, comments, and reviews. Role changes, Owner departure, and team deletion are not supported. Removing a member revokes their workspace access and invalidates Agent keys they created for that team. Any tasks assigned to them are unassigned in the same transaction; each affected task version increments and an activity is written.
+
+The browser selects its workspace with `X-Tasklutein-Workspace-ID`. FastAPI authorizes the membership on each request, and the header cannot grant access. Omitting it selects the personal workspace. The Worker forwards this selection header and continues to remove forged internal identity headers.
 
 ## Task REST API
 
@@ -38,7 +58,8 @@ Agent keys are for MCP identity validation and the API calls made by MCP. Reques
 | GET | `/api/tasks` | Filter and page tasks in the current workspace |
 | POST | `/api/tasks` | Create a task in the current workspace |
 | GET | `/api/tasks/{uuid}` | Fetch a task in the current workspace |
-| PATCH | `/api/tasks/{uuid}` | Update title, description, or status |
+| PATCH | `/api/tasks/{uuid}` | Update title, description, status, or assignee using a task version |
+| GET | `/api/inbox` | Page the current user's assigned tasks and reports awaiting review |
 | DELETE | `/api/tasks/{uuid}?history=keep` | Archive a task and preserve its snapshot, reports, and activity |
 | DELETE | `/api/tasks/{uuid}?history=delete` | Permanently delete a task, reports, and activity |
 
@@ -49,6 +70,12 @@ Create payload:
 ```
 
 Valid statuses are `todo`, `in_progress`, and `done`. Creation returns `201` with `{"task":...}`; list returns `{"tasks":[],"total":0,"limit":25,"offset":0}`; read and update return `{"task":...}`; deletion returns `204`. Invalid fields return `422`; a task missing from the current workspace returns `404`. The `done` status does not mean that a task is archived.
+
+New tasks start at `version: 1`; list, detail, create, and update responses return the current version. A `PATCH` request must include the version it read in the JSON field `expected_version`, for example `{"title":"Fix release workflow","expected_version":1}`. Omitting it returns `428 expected_version_required`. A stale value returns `409 task_version_conflict` with the current task in the top-level `latest_task` field. The caller should retain its input, reread the task, compare, and then decide whether to submit; the server never silently overwrites or retries. A no-op changes neither version, timestamp, nor activity. Real field changes, version increment, and activity commit in one transaction.
+
+The optional `assignee_user_id` must identify a member of the current workspace; send `null` to clear the assignee. The task-list `assignee` filter accepts `me`, `unassigned`, or a current workspace member UUID. Removing an assignee increments the task version so an editor can detect the change.
+
+`GET /api/inbox` accepts `limit` (1–100, default 20) and nonnegative `offset`, and pages the merged `tasks` and `reports` lists by update time. Tasks are unarchived tasks assigned to the current user. Reports are the latest report by another actor on each current-workspace task, excluding reports this user has reviewed. The inbox is a query view; it does not send notifications.
 
 Current-task endpoints, Overview, search, and MCP task tools include only tasks whose `archived_at` is null. Archived tasks are available only through the History API. Accessing an archived task through a current-task or report endpoint, or accessing a task in another workspace, returns `404`.
 
@@ -74,6 +101,15 @@ Each report can have flat comments; threaded replies are not supported. Comment 
 Comment deletion is permanent. Deleting a report, task, or task history physically cascades to its comments. Creating or deleting a comment creates no activity event and does not change the task's `updated_at`.
 
 The body accepts only `{"content":"..."}`. FastAPI sets report `source`, user attribution, and Agent-key attribution from the verified identity; clients cannot supply ownership fields. The create response's `actor_name` uses the email or Agent key name from the verified identity for that request. Later reads resolve the saved actor ID to the associated record's current email or name. Renaming a key or synchronizing an email can therefore change the displayed name on older reports; the system does not store a name snapshot for the time of the operation. Legacy reports whose actor cannot be recovered return `null`, and the UI displays only their `source`. Reports accept `limit` (1–100) and nonnegative `offset`; if `limit` is omitted, up to 100 are returned. Results sort by descending `created_at`, then descending UUID; the response includes `total`, `limit`, and `offset`. Adding a report does not change the task's `updated_at`.
+
+## Report Review REST API
+
+| Method | Path | Description |
+| --- | --- | --- |
+| GET | `/api/reports/{report_id}/reviews` | Read reviews for a current-workspace report; Web users and Agents can read |
+| PUT | `/api/reports/{report_id}/review` | Create or update the current Web user's own review |
+
+Review requests accept an integer `score` (1–5), a `verdict` (`approved` or `needs_work`), and an optional `note` (up to 1,000 characters). Each user has one review per report; repeat submissions update that record. Only human members of the current workspace can write reviews. Agents may read them but cannot submit a score. Archived reports remain readable, but reviews cannot be created or updated after archive. Responses include the reviewer, score, verdict, note, and creation/update times. Reviews do not change the task version or `updated_at`. There is no leaderboard or review-delete API. Reviews cascade with their report when it is deleted.
 
 ## History and Activity REST API
 
@@ -106,9 +142,10 @@ URL: `https://<mcp-host>/mcp`. On the configured MCP hostname, the Worker routes
 | `list_reports` | task_id (UUID), optional limit and offset | Read one report page for a task in that workspace |
 | `get_task` | id (UUID) | Read a task and its default first report page |
 | `create_task` | title, optional description | Create a task in the key's workspace |
-| `update_task` | id, optional title/description/status | Update a task in that workspace |
+| `update_task` | id, expected_version, optional title/description/status/assignee_user_id | Update task fields or assignee using the version read; reread and compare after a conflict |
 | `add_report` | task_id, content | Append an Agent report |
 | `list_report_comments` | report_id (UUID), optional limit and offset | Read one page of comments on a report in that workspace |
+| `list_report_reviews` | report_id (UUID) | Read human reviews for a report; Agents are read-only |
 | `add_report_comment` | report_id (UUID), content | Add an Agent comment to a current report in that workspace |
 
 The optional local stdio MCP adapter uses a personal Agent key configured as `TASKLUTEIN_API_TOKEN` and calls the FastAPI REST API for that workspace. Existing MCP task tools operate only on current tasks and do not read or modify archived tasks.
@@ -117,4 +154,4 @@ API requests with a declared body larger than 64 KiB return `413`; MCP has a sep
 
 ## Database Upgrade Compatibility
 
-Migrations do not run automatically when the API starts. For an existing database, first apply `0002_identity_workspace`, have the intended owner sign in through Cloudflare Access and create a personal workspace, then apply `0003_task_workspace_required`, `0004_task_history`, `0005_report_comments`, and `0006_agent_token_hard_delete` in order. If unassigned tasks from the former shared workspace remain, a maintainer must explicitly provide that user's Access issuer, subject, and email plus the confirmation value `assign-existing-tasks`. The migration preserves those tasks and their associated reports together in that one workspace; it does not infer or split ownership. Existing report source and content are preserved, while user and Agent-key attribution remain unset. `0004_task_history` treats existing tasks as current and does not fabricate activity. `0006_agent_token_hard_delete` permits physical key removal while preserving reports, comments, and activities and clearing their key references. After the first archive, an older backend that ignores `archived_at` would show archived tasks again, so rollback must retain archive filtering and workspace isolation; removing the history schema requires separate review. See the [architecture guide](ARCHITECTURE.en.md) for the full migration requirements.
+Migrations do not run automatically when the API starts. For an existing database, first apply `0002_identity_workspace`, have the intended owner sign in through Cloudflare Access and create a personal workspace, then apply `0003_task_workspace_required`, `0004_task_history`, `0005_report_comments`, `0006_agent_token_hard_delete`, and `0007_team_review_concurrency` in order. If unassigned tasks from the former shared workspace remain, a maintainer must explicitly provide that user's Access issuer, subject, and email plus the confirmation value `assign-existing-tasks`. The migration preserves those tasks and their associated reports together in that one workspace; it does not infer or split ownership. Existing report source and content are preserved, while user and Agent-key attribution remain unset. `0004_task_history` treats existing tasks as current and does not fabricate activity. `0007_team_review_concurrency` marks existing workspaces as personal, backfills owner memberships, and initializes existing task versions to `1` without moving task, report, comment, activity, or Agent-key rows or changing their IDs. `0006_agent_token_hard_delete` permits physical key removal while preserving reports, comments, and activities and clearing their key references. After the first archive, an older backend that ignores `archived_at` would show archived tasks again, so rollback must retain archive filtering and workspace isolation; removing the history schema requires separate review. See the [architecture guide](ARCHITECTURE.en.md) for the full migration requirements.
