@@ -4,7 +4,7 @@
 
 This file records shipped features, fixes, compatibility changes, and upgrade requirements. GitHub Release notes are generated from the tagged version section.
 
-## [Unreleased]
+## [0.1.3] - 2026-10-25
 
 ### 简体中文
 
