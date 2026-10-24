@@ -10,7 +10,7 @@ permissions:
 jobs:
   web-worker-and-mcp:
     name: Worker, React, MCP and docs
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
       # Suppress only the two known third-party deprecation codes emitted by the
@@ -40,7 +40,7 @@ jobs:
 
   fastapi:
     name: FastAPI tests and lint
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     services:
       postgres:
