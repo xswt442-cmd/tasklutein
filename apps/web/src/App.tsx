@@ -2,8 +2,8 @@ import { QueryClient, QueryClientProvider, useIsFetching, useQuery, useQueryClie
 import { Archive, CheckCircle2, Circle, LayoutDashboard, ListTodo, LogOut, RefreshCw, Settings, Users, Inbox as InboxIcon } from "lucide-react";
 import { useContext, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { BrowserRouter, NavLink, Outlet, Route, Routes } from "react-router";
-import { api, probeSession, setApiWorkspaceId } from "./api";
+import { BrowserRouter, NavLink, Outlet, Route, Routes, useLocation, useSearchParams } from "react-router";
+import { api, ApiError, probeSession, setApiWorkspaceId } from "./api";
 import type { Overview, Session, Workspace, WorkspaceList } from "./api";
 import { ApiFeedback } from "./components/ApiFeedback";
 import { HistoryPage } from "./pages/HistoryPage";
@@ -85,14 +85,34 @@ function GuestPreview({ error, onRetry }: { error?: Error; onRetry?: () => void 
 
 function WorkspaceRoutes({ session, signOut }: { session: Session; signOut: () => void }) {
   const client = useQueryClient();
+  const location = useLocation();
+  const [searchParams, setSearchParams] = useSearchParams();
   const workspaceList = useQuery({ queryKey: ["workspaces"], queryFn: () => api<WorkspaceList>("/workspaces") });
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const workspaces = workspaceList.data?.workspaces ?? [];
   const currentId = selectedId ?? workspaceList.data?.current_workspace_id ?? session.workspace.id;
   const current = workspaces.find((workspace) => workspace.id === currentId) ?? workspaces.find((workspace) => workspace.id === session.workspace.id) ?? { ...session.workspace, kind: "personal" as const, role: "owner" as const };
   useEffect(() => { if (workspaceList.data && !selectedId) setApiWorkspaceId(workspaceList.data.current_workspace_id); }, [workspaceList.data, selectedId]);
+  useEffect(() => {
+    if (!(workspaceList.error instanceof ApiError) || workspaceList.error.code !== "workspace_not_found" || currentId === session.workspace.id) return;
+    setApiWorkspaceId(session.workspace.id);
+    setSelectedId(session.workspace.id);
+    client.removeQueries({ predicate: (query) => !["session", "workspaces"].includes(String(query.queryKey[0])) });
+    void client.invalidateQueries({ queryKey: ["workspaces"] });
+  }, [client, currentId, session.workspace.id, workspaceList.error]);
   function selectWorkspace(id: string) {
     if (id === currentId) return;
+    if (location.pathname === "/tasks") {
+      const assignee = searchParams.get("assignee");
+      if (assignee && !["all", "me", "unassigned"].includes(assignee)) {
+        setSearchParams((currentParams) => {
+          const next = new URLSearchParams(currentParams);
+          next.delete("assignee");
+          next.delete("offset");
+          return next;
+        }, { replace: true });
+      }
+    }
     setApiWorkspaceId(id);
     client.removeQueries({ predicate: (query) => !["session", "workspaces"].includes(String(query.queryKey[0])) });
     setSelectedId(id);

@@ -142,7 +142,7 @@ def list_inbox(
         .where(
             Task.workspace_id == principal.workspace_id,
             Task.archived_at.is_(None),
-            Report.actor_user_id != principal.user_id,
+            Report.actor_user_id.is_distinct_from(principal.user_id),
         )
         .subquery()
     )

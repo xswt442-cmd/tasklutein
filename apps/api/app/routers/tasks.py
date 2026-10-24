@@ -115,21 +115,28 @@ def update_task(
     db: Session = Depends(get_db),
     principal: Principal = Depends(require_principal),
 ):
-    task = find_task(db, task_id, principal.workspace_id, lock=True)
     requested = payload.model_dump(exclude_unset=True)
     expected_version = requested.pop("expected_version", None)
     if expected_version is None:
         raise HTTPException(status_code=428, detail="expected_version_required")
+    if "assignee_user_id" in requested and requested["assignee_user_id"] is not None:
+        assignee = db.scalar(
+            select(WorkspaceMember)
+            .where(
+                WorkspaceMember.workspace_id == principal.workspace_id,
+                WorkspaceMember.user_id == requested["assignee_user_id"],
+            )
+            .with_for_update(read=True)
+        )
+        if assignee is None:
+            raise HTTPException(status_code=404, detail="workspace_member_not_found")
+    task = find_task(db, task_id, principal.workspace_id, lock=True)
     if expected_version != task.version:
         latest_task = TaskView.model_validate(task).model_dump(mode="json")
         raise HTTPException(
             status_code=409,
             detail={"code": "task_version_conflict", "latest_task": latest_task},
         )
-    if "assignee_user_id" in requested and requested["assignee_user_id"] is not None:
-        assignee = db.get(WorkspaceMember, (principal.workspace_id, requested["assignee_user_id"]))
-        if assignee is None:
-            raise HTTPException(status_code=404, detail="workspace_member_not_found")
     changed_fields = [
         field for field in ("title", "description", "status", "assignee_user_id")
         if field in requested and getattr(task, field) != requested[field]

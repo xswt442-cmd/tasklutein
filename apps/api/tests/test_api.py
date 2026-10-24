@@ -351,6 +351,15 @@ def test_inbox_pages_assigned_tasks_and_latest_unreviewed_external_reports(clien
     assert second_page.status_code == 200, second_page.text
     assert second_page.json()["tasks"][0]["id"] == task["id"]
 
+    owner_inbox = client.get("/api/inbox", headers=owner_headers)
+    assert owner_inbox.status_code == 200, owner_inbox.text
+    assert owner_inbox.json()["total"] == 0
+    with app.state.test_session_factory() as db:
+        legacy_report = db.get(Report, UUID(report_id))
+        assert legacy_report is not None
+        legacy_report.actor_user_id = None
+        db.commit()
+
     review = client.put(
         f"/api/reports/{report_id}/review", headers=team_member_headers,
         json={"score": 4, "verdict": "approved"},
@@ -362,7 +371,8 @@ def test_inbox_pages_assigned_tasks_and_latest_unreviewed_external_reports(clien
 
     owner_inbox = client.get("/api/inbox", headers=owner_headers)
     assert owner_inbox.status_code == 200, owner_inbox.text
-    assert owner_inbox.json()["total"] == 0
+    assert owner_inbox.json()["total"] == 1
+    assert owner_inbox.json()["reports"][0]["report"]["actor_user_id"] is None
 
 
 def test_task_update_and_activity_commit_atomically(client: TestClient):

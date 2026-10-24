@@ -242,7 +242,14 @@ def remove_member(
     _owner(db, workspace_id, principal.user_id)
     if user_id == principal.user_id:
         raise HTTPException(status_code=409, detail="workspace_owner_cannot_leave")
-    member = db.get(WorkspaceMember, (workspace_id, user_id))
+    member = db.scalar(
+        select(WorkspaceMember)
+        .where(
+            WorkspaceMember.workspace_id == workspace_id,
+            WorkspaceMember.user_id == user_id,
+        )
+        .with_for_update()
+    )
     if member is None or member.role != "member":
         raise HTTPException(status_code=404, detail="workspace_member_not_found")
     tasks = db.scalars(

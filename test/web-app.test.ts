@@ -31,6 +31,7 @@ const nativeFetch = globalThis.fetch.bind(globalThis);
 let apiOrigin = "";
 let apiProcess: ChildProcess | undefined;
 let browserRequests: Array<{ url: string; method: string; headers: Headers }> = [];
+let unavailableWorkspaceId: string | null = null;
 
 async function freePort(): Promise<number> {
   const server = createServer();
@@ -109,6 +110,7 @@ afterAll(async () => {
 beforeEach(async () => {
   window.history.replaceState({}, "", "/");
   setApiWorkspaceId(null);
+  unavailableWorkspaceId = null;
   browserRequests = [];
   vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
     const localUrl = typeof input === "string" && input.startsWith("/") ? new URL(input, apiOrigin) : input;
@@ -119,6 +121,12 @@ beforeEach(async () => {
     headers.set("X-Tasklutein-Access-Email", testEmail);
     headers.set("Origin", "http://localhost:5173");
     browserRequests.push({ url: String(localUrl), method: init?.method ?? "GET", headers });
+    const requestUrl = new URL(String(localUrl), apiOrigin);
+    if (unavailableWorkspaceId && requestUrl.pathname === "/api/workspaces" && headers.get("X-Tasklutein-Workspace-ID") === unavailableWorkspaceId) {
+      return Promise.resolve(new Response(JSON.stringify({ detail: "workspace_not_found", code: "workspace_not_found" }), {
+        status: 404, headers: { "Content-Type": "application/json" },
+      }));
+    }
     return nativeFetch(localUrl, { ...init, headers });
   });
   const bootstrap = await nativeFetch(new URL("/api/session/bootstrap", apiOrigin), {
@@ -167,6 +175,7 @@ beforeEach(async () => {
 afterEach(() => {
   cleanup();
   setApiWorkspaceId(null);
+  unavailableWorkspaceId = null;
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -229,12 +238,41 @@ describe("Tasklutein browser workflow over the real FastAPI HTTP API", () => {
     const members = await nativeFetch(new URL(`/api/workspaces/${workspaceId}/members`, apiOrigin), {
       headers: memberHeaders,
     });
-    expect((await members.json() as { members: Array<{ email: string; role: string }> }).members)
+    const memberList = await members.json() as { members: Array<{ user_id: string; email: string; role: string }> };
+    expect(memberList.members)
       .toContainEqual(expect.objectContaining({ email: "web-team-member@example.test", role: "member" }));
     expect(browserRequests.some(({ url, method, headers }) =>
       method === "POST" && url.endsWith(`/api/workspaces/${workspaceId}/invitations`) &&
       headers.get("X-Tasklutein-Workspace-ID") === workspaceId,
     )).toBe(true);
+
+    const personalWorkspacesResponse = await nativeFetch(new URL("/api/workspaces", apiOrigin), { headers: testHeaders() });
+    const personalWorkspaceId = (await personalWorkspacesResponse.json() as { current_workspace_id: string }).current_workspace_id;
+    fireEvent.change(screen.getByLabelText("切换工作区"), { target: { value: workspaceId } });
+    await waitFor(() => expect((document.getElementById("workspace-select") as unknown as { value: string }).value).toBe(workspaceId));
+    fireEvent.click(screen.getByRole("button", { name: "刷新数据" }));
+    fireEvent.click(screen.getAllByRole("link", { name: "任务" })[0]!);
+    await screen.findByRole("heading", { name: "任务" });
+    const memberId = memberList.members.find((member) => member.email === "web-team-member@example.test")!.user_id;
+    await screen.findByRole("option", { name: "web-team-member@example.test" });
+    fireEvent.change(screen.getByLabelText("按负责人筛选"), { target: { value: memberId } });
+    expect((screen.getByLabelText("按负责人筛选") as unknown as { value: string }).value).toBe(memberId);
+    await waitFor(() => expect(new URL(window.location.href).searchParams.get("assignee")).toBe(memberId));
+    fireEvent.change(screen.getByLabelText("切换工作区"), { target: { value: personalWorkspaceId } });
+    await waitFor(() => expect(new URL(window.location.href).searchParams.get("assignee")).toBeNull());
+
+    unavailableWorkspaceId = workspaceId;
+    fireEvent.change(screen.getByLabelText("切换工作区"), { target: { value: workspaceId } });
+    await waitFor(() => expect((document.getElementById("workspace-select") as unknown as { value: string }).value).toBe(workspaceId));
+    const workspaceListRequestCount = browserRequests.filter(({ url, method }) => method === "GET" && new URL(url).pathname === "/api/workspaces").length;
+    const refreshButton = screen.getByRole("button", { name: "刷新数据" });
+    await waitFor(() => expect(refreshButton.hasAttribute("disabled")).toBe(false));
+    fireEvent.click(refreshButton);
+    await waitFor(() => expect((document.getElementById("workspace-select") as unknown as { value: string }).value).toBe(personalWorkspaceId));
+    const workspaceListRequests = browserRequests.filter(({ url, method }) => method === "GET" && new URL(url).pathname === "/api/workspaces");
+    expect(workspaceListRequests.length).toBeGreaterThan(workspaceListRequestCount);
+    expect(workspaceListRequests.at(-1)?.headers.get("X-Tasklutein-Workspace-ID")).toBe(personalWorkspaceId);
+    expect((document.getElementById("workspace-select") as unknown as { value: string }).value).toBe(personalWorkspaceId);
   }, 15_000);
 
   it("creates, searches, updates, reports, and refreshes real API data", async () => {
@@ -247,6 +285,32 @@ describe("Tasklutein browser workflow over the real FastAPI HTTP API", () => {
     fireEvent.change(screen.getByLabelText("新任务说明"), { target: { value: "Created through the browser and FastAPI." } });
     fireEvent.click(screen.getByRole("button", { name: "创建任务" }));
     await screen.findByRole("heading", { name: title });
+
+    expect(screen.getByLabelText("负责人").hasAttribute("disabled")).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "编辑" }));
+    const draftDescription = "Local draft preserved after a concurrent update.";
+    fireEvent.change(screen.getByLabelText("说明"), { target: { value: draftDescription } });
+    const currentTaskResponse = await nativeFetch(new URL("/api/tasks?q=" + encodeURIComponent(title), apiOrigin), { headers: testHeaders() });
+    const currentTask = (await currentTaskResponse.json() as { tasks: Array<{ id: string; version: number }> }).tasks[0]!;
+    const concurrentUpdate = await nativeFetch(new URL(`/api/tasks/${currentTask.id}`, apiOrigin), {
+      method: "PATCH",
+      headers: { ...testHeaders(), "Content-Type": "application/json" },
+      body: JSON.stringify({ description: "Concurrent server update.", expected_version: currentTask.version }),
+    });
+    expect(concurrentUpdate.status).toBe(200);
+    const detailRequestCount = browserRequests.filter(({ url, method }) => method === "GET" && url.includes(`/api/tasks/${currentTask.id}`)).length;
+    fireEvent.click(screen.getByRole("button", { name: "刷新数据" }));
+    await waitFor(() => expect(browserRequests.filter(({ url, method }) => method === "GET" && url.includes(`/api/tasks/${currentTask.id}`)).length).toBeGreaterThan(detailRequestCount));
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    await screen.findByText(/服务器当前版本为 v\d+/);
+    expect((screen.getByLabelText("说明") as HTMLTextAreaElement).value).toBe(draftDescription);
+    fireEvent.click(screen.getByRole("button", { name: "保留草稿并基于最新版本重新确认" }));
+    expect((screen.getByLabelText("说明") as HTMLTextAreaElement).value).toBe(draftDescription);
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(async () => {
+      const updated = await nativeFetch(new URL(`/api/tasks/${currentTask.id}`, apiOrigin), { headers: testHeaders() });
+      expect((await updated.json() as { task: { description: string } }).task.description).toBe(draftDescription);
+    });
 
     fireEvent.change(screen.getByLabelText("任务状态"), { target: { value: "in_progress" } });
     await waitFor(async () => {
@@ -310,6 +374,44 @@ describe("Tasklutein browser workflow over the real FastAPI HTTP API", () => {
     expect(window.localStorage.length).toBe(0);
     expect(window.sessionStorage.length).toBe(0);
   });
+
+  it("returns to a valid Inbox page after items disappear from the current page", async () => {
+    const userResponse = await nativeFetch(new URL("/api/me", apiOrigin), { headers: testHeaders() });
+    const userId = (await userResponse.json() as { user: { id: string } }).user.id;
+    const taskIds: Array<{ id: string; version: number }> = [];
+    for (let index = 0; index < 26; index += 1) {
+      const created = await nativeFetch(new URL("/api/tasks", apiOrigin), {
+        method: "POST",
+        headers: { ...testHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({ title: `Inbox pagination ${Date.now()} ${index}` }),
+      });
+      expect(created.status).toBe(201);
+      const task = (await created.json() as { task: { id: string; version: number } }).task;
+      const assigned = await nativeFetch(new URL(`/api/tasks/${task.id}`, apiOrigin), {
+        method: "PATCH",
+        headers: { ...testHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({ assignee_user_id: userId, expected_version: task.version }),
+      });
+      expect(assigned.status).toBe(200);
+      taskIds.push(task);
+    }
+
+    await enterWorkspace();
+    fireEvent.click(screen.getAllByRole("link", { name: "待我处理" })[0]!);
+    await screen.findByRole("heading", { name: "分配给我的任务 25" });
+    fireEvent.click(screen.getByRole("button", { name: "下一页待处理事项" }));
+    await screen.findByRole("heading", { name: "分配给我的任务 1" });
+
+    const removedFromInbox = await nativeFetch(new URL(`/api/tasks/${taskIds[0]!.id}`, apiOrigin), {
+      method: "PATCH",
+      headers: { ...testHeaders(), "Content-Type": "application/json" },
+      body: JSON.stringify({ assignee_user_id: null, expected_version: taskIds[0]!.version + 1 }),
+    });
+    expect(removedFromInbox.status).toBe(200);
+    fireEvent.click(screen.getByRole("button", { name: "刷新数据" }));
+    await screen.findByRole("heading", { name: "分配给我的任务 25" });
+    expect(screen.queryByText("这一页没有分配给你的任务。")).toBeNull();
+  }, 20_000);
 
   it("shows a public guest preview without loading workspace data or running business operations", async () => {
     const guestFetch = vi.fn().mockResolvedValue({ type: "opaqueredirect", status: 0, ok: false } as Response);

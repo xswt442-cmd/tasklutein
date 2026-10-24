@@ -124,6 +124,7 @@ export function TaskDetailPage() {
   const [showDeleteOptions, setShowDeleteOptions] = useState(false);
   const [editTitle, setEditTitle] = useState("");
   const [editDescription, setEditDescription] = useState("");
+  const [editVersion, setEditVersion] = useState<number | null>(null);
   const [reportDraft, setReportDraft] = useState("");
   const [conflictTask, setConflictTask] = useState<Task | null>(null);
   const reportOffsetValue = Number(searchParams.get("reports_offset") ?? 0);
@@ -153,8 +154,8 @@ export function TaskDetailPage() {
   }, [reportOffset, reportsQuery.data, searchParams, setSearchParams]);
 
   const updateTask = useMutation({
-    mutationFn: (changes: Partial<Pick<Task, "title" | "description" | "status" | "assignee_user_id">>) =>
-      api<{ task: Task }>("/tasks/" + taskId, { method: "PATCH", body: JSON.stringify({ ...changes, expected_version: taskQuery.data?.task.version }) }),
+    mutationFn: (changes: Partial<Pick<Task, "title" | "description" | "status" | "assignee_user_id">> & { expected_version: number }) =>
+      api<{ task: Task }>("/tasks/" + taskId, { method: "PATCH", body: JSON.stringify(changes) }),
     onSuccess: async ({ task }) => {
       queryClient.setQueryData(["task", workspace.id, taskId], { task });
       await Promise.all([
@@ -206,14 +207,15 @@ export function TaskDetailPage() {
   function beginEditing(task: Task) {
     setEditTitle(task.title);
     setEditDescription(task.description);
+    setEditVersion(task.version);
     setEditing(true);
     updateTask.reset();
   }
 
   function saveDetails(event: FormEvent) {
     event.preventDefault();
-    if (!editTitle.trim() || updateTask.isPending) return;
-    updateTask.mutate({ title: editTitle.trim(), description: editDescription });
+    if (!editTitle.trim() || updateTask.isPending || editVersion === null) return;
+    updateTask.mutate({ title: editTitle.trim(), description: editDescription, expected_version: editVersion });
   }
 
   function submitReport(event: FormEvent) {
@@ -312,16 +314,16 @@ export function TaskDetailPage() {
           </div>
           <label className="block text-sm font-medium">任务状态
             <select className="input mt-1.5" value={task.status} disabled={updateTask.isPending}
-              onChange={(event) => updateTask.mutate({ status: event.target.value as TaskStatus })}>
+              onChange={(event) => updateTask.mutate({ status: event.target.value as TaskStatus, expected_version: task.version })}>
               {(Object.entries(statusLabels) as [TaskStatus, string][]).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
             </select>
           </label>
           <label className="block text-sm font-medium">负责人
-            <select className="input mt-1.5" value={task.assignee_user_id ?? ""} disabled={updateTask.isPending || members.isPending} onChange={(event) => updateTask.mutate({ assignee_user_id: event.target.value || null })}><option value="">未分配</option>{assignees.map((member) => <option key={member.user_id} value={member.user_id}>{member.email}</option>)}</select>
+            <select className="input mt-1.5" value={task.assignee_user_id ?? ""} disabled={updateTask.isPending || (workspace.kind === "team" && members.isPending)} onChange={(event) => updateTask.mutate({ assignee_user_id: event.target.value || null, expected_version: task.version })}><option value="">未分配</option>{assignees.map((member) => <option key={member.user_id} value={member.user_id}>{member.email}</option>)}</select>
           </label>
         </div>}
       {updateTask.isError && !editing && <div className="mt-4"><ApiFeedback error={updateTask.error} /></div>}
-      {conflictTask && <div className="mt-4 rounded-xl border border-[#f1d6a6] bg-[#fffaf0] p-4"><p className="text-sm font-semibold text-[#7a4b08]">此任务已被其他成员或 Agent 更新。</p><p className="mt-1 text-xs text-[#765f3b]">你的编辑内容仍保留。服务器当前版本为 v{conflictTask.version}：{conflictTask.title}</p><button type="button" className="secondary-btn mt-3" onClick={() => { queryClient.setQueryData(["task", workspace.id, taskId], { task: conflictTask }); setEditTitle(conflictTask.title); setEditDescription(conflictTask.description); setEditing(true); setConflictTask(null); updateTask.reset(); }}>查看最新版本并重新确认</button></div>}
+      {conflictTask && <div className="mt-4 rounded-xl border border-[#f1d6a6] bg-[#fffaf0] p-4"><p className="text-sm font-semibold text-[#7a4b08]">此任务已被其他成员或 Agent 更新。</p><p className="mt-1 text-xs text-[#765f3b]">服务器当前版本为 v{conflictTask.version}：{conflictTask.title}</p>{editing && <p className="mt-1 text-xs text-[#765f3b]">标题和说明草稿仍保留在编辑框中；继续后会基于此版本重新提交。</p>}<button type="button" className="secondary-btn mt-3" onClick={() => { queryClient.setQueryData(["task", workspace.id, taskId], { task: conflictTask }); if (!editing) { setEditTitle(conflictTask.title); setEditDescription(conflictTask.description); } setEditVersion(conflictTask.version); setEditing(true); setConflictTask(null); updateTask.reset(); }}>{editing ? "保留草稿并基于最新版本重新确认" : "用最新版本开始编辑"}</button></div>}
     </section>
 
     <section className="card">
