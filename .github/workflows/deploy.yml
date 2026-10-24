@@ -39,6 +39,10 @@ jobs:
           node-version: '24'
           cache: npm
       - run: npm ci
+      # The verify job builds in its own runner; wrangler uploads assets from
+      # apps/web/dist, so the production job must build them itself.
+      - name: Build web assets for upload
+        run: npm run build:web
       - name: Check required GitHub Cloudflare credentials
         shell: bash
         env:
