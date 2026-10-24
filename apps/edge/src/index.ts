@@ -24,6 +24,7 @@ const INTERNAL_IDENTITY_HEADERS = [
 ];
 const MAX_REST_REQUEST_BYTES = 64 * 1024;
 const MAX_MCP_REQUEST_BYTES = 1024 * 1024;
+const WORKSPACE_SELECTION_HEADER = "x-tasklutein-workspace-id";
 const accessJwksByIssuer = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
 const ALLOWED_HEADERS = new Set([
   "authorization", "content-type", "accept", "accept-language",
@@ -186,7 +187,11 @@ export async function proxyGateway(
   const target = new URL(incoming.pathname + incoming.search, origin);
   const upstreamRequest = new Request(target.toString(), request);
   for (const name of [...upstreamRequest.headers.keys()]) {
-    if (!ALLOWED_HEADERS.has(name.toLowerCase())) upstreamRequest.headers.delete(name);
+    const normalizedName = name.toLowerCase();
+    const allowedWorkspaceSelection = isWeb && normalizedName === WORKSPACE_SELECTION_HEADER;
+    if (!ALLOWED_HEADERS.has(normalizedName) && !allowedWorkspaceSelection) {
+      upstreamRequest.headers.delete(name);
+    }
   }
   for (const name of INTERNAL_IDENTITY_HEADERS) upstreamRequest.headers.delete(name);
   if (identity) {

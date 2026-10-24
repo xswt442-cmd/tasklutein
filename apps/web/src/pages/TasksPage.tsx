@@ -1,11 +1,12 @@
-import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, ArrowRight, Plus, Search } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router";
 import { api } from "../api";
-import type { TaskPage, TaskSort, TaskStatus } from "../api";
+import type { TaskPage, TaskSort, TaskStatus, WorkspaceMember } from "../api";
 import { ApiFeedback } from "../components/ApiFeedback";
+import { useWorkspace } from "../workspace";
 
 const statusLabels: Record<TaskStatus, string> = {
   todo: "待处理",
@@ -20,6 +21,7 @@ export function TasksPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const { workspace } = useWorkspace();
   const statusValue = searchParams.get("status");
   const status = statusValue && validStatuses.has(statusValue as TaskStatus) ? statusValue as TaskStatus : "all";
   const q = searchParams.get("q")?.trim() ?? "";
@@ -29,6 +31,7 @@ export function TasksPage() {
   const limit = [25, 50, 100].includes(limitValue) ? limitValue : 25;
   const offsetValue = Number(searchParams.get("offset") ?? 0);
   const offset = Number.isSafeInteger(offsetValue) && offsetValue >= 0 ? offsetValue : 0;
+  const assignee = searchParams.get("assignee") ?? "all";
   const [searchDraft, setSearchDraft] = useState(q);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -36,15 +39,18 @@ export function TasksPage() {
   useEffect(() => setSearchDraft(q), [q]);
 
   const tasks = useQuery({
-    queryKey: ["tasks", status, q, sort, limit, offset],
+    queryKey: ["tasks", workspace.id, status, q, sort, assignee, limit, offset],
     queryFn: () => {
       const params = new URLSearchParams({ sort, limit: String(limit), offset: String(offset) });
       if (status !== "all") params.set("status", status);
       if (q) params.set("q", q);
+      if (assignee !== "all") params.set("assignee", assignee);
       return api<TaskPage>("/tasks?" + params.toString());
     },
-    placeholderData: keepPreviousData,
+    placeholderData: (previousData, previousQuery) =>
+      previousQuery?.queryKey[1] === workspace.id ? previousData : undefined,
   });
+  const members = useQuery({ queryKey: ["members", workspace.id], queryFn: () => api<{ members: WorkspaceMember[] }>(`/workspaces/${workspace.id}/members`), enabled: workspace.kind === "team" });
 
   useEffect(() => {
     if (!tasks.data || tasks.isPlaceholderData || offset === 0 || offset < tasks.data.total) return;
@@ -121,7 +127,7 @@ export function TasksPage() {
           <button type="submit" className="secondary-btn"><Search size={16} /> 搜索</button>
         </form>
 
-        <div className="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-[1fr_1fr]">
+        <div className="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-[1fr_1fr_1fr]">
           <label className="text-xs font-medium text-[#56655a]">任务状态
             <select aria-label="按任务状态筛选" className="input mt-1.5" value={status}
               onChange={(event) => updateFilters({ status: event.target.value === "all" ? null : event.target.value, offset: "0" })}>
@@ -134,6 +140,12 @@ export function TasksPage() {
               onChange={(event) => updateFilters({ sort: event.target.value, offset: "0" })}>
               <option value="updated_desc">最近更新</option>
               <option value="created_desc">最近创建</option>
+            </select>
+          </label>
+          <label className="text-xs font-medium text-[#56655a]">负责人
+            <select aria-label="按负责人筛选" className="input mt-1.5" value={assignee} onChange={(event) => updateFilters({ assignee: event.target.value === "all" ? null : event.target.value, offset: "0" })}>
+              <option value="all">所有任务</option><option value="me">分配给我</option><option value="unassigned">未分配</option>
+              {members.data?.members.map((member) => <option key={member.user_id} value={member.user_id}>{member.email}</option>)}
             </select>
           </label>
         </div>
@@ -150,6 +162,7 @@ export function TasksPage() {
               <span className="mt-1 block truncate text-xs text-[#69776d]">{task.description || "暂无说明"}</span>
             </span>
             <span className="shrink-0 rounded-full bg-[#f2f6ef] px-2.5 py-1 text-xs text-[#4e6c56]">{statusLabels[task.status]}</span>
+            {task.assignee_name && <span className="hidden max-w-40 truncate rounded-full bg-[#edf5ed] px-2.5 py-1 text-xs text-[#4e6c56] sm:inline">负责人：{task.assignee_name}</span>}
             <time className="hidden shrink-0 text-xs text-[#718076] sm:block">{new Date(task.updated_at).toLocaleDateString("zh-CN")}</time>
             <ArrowRight className="shrink-0 text-[#789180]" size={16} />
           </Link>)}

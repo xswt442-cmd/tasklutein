@@ -37,6 +37,8 @@ class TaskUpdate(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=120)
     description: str | None = Field(default=None, max_length=4000)
     status: TaskStatus | None = None
+    assignee_user_id: UUID | None = None
+    expected_version: int | None = Field(default=None, ge=1)
 
     @field_validator("title")
     @classmethod
@@ -47,7 +49,10 @@ class TaskUpdate(BaseModel):
 
     @model_validator(mode="after")
     def at_least_one_field(self):
-        if not self.model_fields_set or any(getattr(self, name) is None for name in self.model_fields_set):
+        changes = self.model_fields_set - {"expected_version"}
+        if self.expected_version is not None and not changes:
+            raise ValueError("supply at least one field to update")
+        if any(getattr(self, name) is None for name in changes - {"assignee_user_id"}):
             raise ValueError("supply at least one non-null field")
         return self
 
@@ -58,6 +63,9 @@ class TaskView(BaseModel):
     title: str
     description: str
     status: TaskStatus
+    assignee_user_id: UUID | None = None
+    assignee_name: str | None = None
+    version: int
     created_at: datetime
     updated_at: datetime
 
@@ -82,6 +90,47 @@ class ReportView(BaseModel):
     source: Literal["user", "agent"]
     actor_name: str | None = None
     created_at: datetime
+
+
+class WorkspaceCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=120)
+
+    @field_validator("name")
+    @classmethod
+    def clean_name(cls, name: str) -> str:
+        name = name.strip()
+        if not name:
+            raise ValueError("name must not be blank")
+        return name
+
+
+class WorkspaceInvitationCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    email: str = Field(min_length=3, max_length=320)
+
+    @field_validator("email")
+    @classmethod
+    def clean_email(cls, email: str) -> str:
+        email = email.strip().lower()
+        if "@" not in email or any(character.isspace() for character in email):
+            raise ValueError("email must be valid")
+        return email
+
+
+class ReportReviewCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    score: int = Field(ge=1, le=5)
+    verdict: Literal["approved", "needs_work"]
+    note: str | None = Field(default=None, max_length=1000)
+
+    @field_validator("note")
+    @classmethod
+    def clean_note(cls, note: str | None) -> str | None:
+        if note is None:
+            return None
+        note = note.strip()
+        return note or None
 
 
 class TaskList(BaseModel):

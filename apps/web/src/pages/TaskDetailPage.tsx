@@ -3,9 +3,10 @@ import { ArrowLeft, ArrowRight, Pencil, Save, Send, Trash2, X } from "lucide-rea
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router";
-import { api } from "../api";
-import type { ReportCommentPage, ReportPage, Task, TaskStatus } from "../api";
+import { api, ApiError } from "../api";
+import type { ReportCommentPage, ReportPage, ReportReview, ReviewList, Session, Task, TaskStatus, WorkspaceMember } from "../api";
 import { ApiFeedback } from "../components/ApiFeedback";
+import { useWorkspace } from "../workspace";
 
 const statusLabels: Record<TaskStatus, string> = {
   todo: "待处理",
@@ -79,24 +80,61 @@ function CurrentReportComments({ reportId }: { reportId: string }) {
   </div>;
 }
 
+export function ReportReviews({ reportId, readOnly = false }: { reportId: string; readOnly?: boolean }) {
+  const client = useQueryClient();
+  const [expanded, setExpanded] = useState(false);
+  const reviews = useQuery({ queryKey: ["reviews", reportId], queryFn: () => api<ReviewList>(`/reports/${reportId}/reviews`), enabled: expanded });
+  const [score, setScore] = useState("5");
+  const [verdict, setVerdict] = useState<"approved" | "needs_work">("approved");
+  const [note, setNote] = useState("");
+  useEffect(() => {
+    if (!reviews.data?.my_review) return;
+    setScore(String(reviews.data.my_review.score));
+    setVerdict(reviews.data.my_review.verdict);
+    setNote(reviews.data.my_review.note ?? "");
+  }, [reviews.data?.my_review?.updated_at]);
+  const save = useMutation({
+    mutationFn: () => api<{ review: ReportReview; reviews: ReportReview[] }>(`/reports/${reportId}/review`, { method: "PUT", body: JSON.stringify({ score: Number(score), verdict, note: note.trim() || null }) }),
+    onSuccess: async () => { await client.invalidateQueries({ queryKey: ["reviews", reportId] }); },
+  });
+  return <div className="mt-3 border-t border-[#edf1ea] pt-2">
+    <button type="button" className="quiet-link" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>{expanded ? "收起评审" : "查看评审与验收"}</button>
+    <div hidden={!expanded}>{expanded && <div className="mt-2 rounded-xl border border-[#e6ece3] bg-[#f8faf5] p-4">
+    <h4 className="text-sm font-semibold">评审与验收</h4>
+    {reviews.isError && <ApiFeedback error={reviews.error} onRetry={() => void reviews.refetch()} />}
+    {reviews.data?.reviews.map((review) => <div key={review.id} className="mt-3 border-t border-[#e5ece2] pt-3 text-sm"><div className="flex flex-wrap justify-between gap-2"><span className="font-medium">{review.reviewer_email} · {review.score}/5</span><span className={review.verdict === "approved" ? "text-[#26704b]" : "text-[#9b5b1b]"}>{review.verdict === "approved" ? "已通过" : "需要修改"}</span></div>{review.note && <p className="mt-1 whitespace-pre-wrap text-[#56655a]">{review.note}</p>}</div>)}
+    {!readOnly && <form className="mt-4 grid gap-2 border-t border-[#e5ece2] pt-4 sm:grid-cols-[110px_1fr]" onSubmit={(event) => { event.preventDefault(); if (!save.isPending) save.mutate(); }}>
+      <label className="text-xs font-medium">评分<select className="input mt-1" value={score} onChange={(event) => setScore(event.target.value)}>{[5, 4, 3, 2, 1].map((value) => <option value={value} key={value}>{value} / 5</option>)}</select></label>
+      <label className="text-xs font-medium">验收状态<select className="input mt-1" value={verdict} onChange={(event) => setVerdict(event.target.value as typeof verdict)}><option value="approved">通过</option><option value="needs_work">需要修改</option></select></label>
+      <label className="text-xs font-medium sm:col-span-2">评语<textarea className="input mt-1 min-h-20 resize-y" maxLength={1000} value={note} onChange={(event) => setNote(event.target.value)} placeholder="可选，最多 1000 字" /></label>
+      {save.isError && <div className="sm:col-span-2"><ApiFeedback error={save.error} /></div>}
+      <button className="secondary-btn sm:col-span-2" type="submit" disabled={save.isPending}>{reviews.data?.my_review ? "更新我的评审" : "提交评审"}</button>
+    </form>}
+    </div>}</div>
+  </div>;
+}
+
 export function TaskDetailPage() {
   const { taskId = "" } = useParams();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const { workspace } = useWorkspace();
   const [searchParams, setSearchParams] = useSearchParams();
   const [editing, setEditing] = useState(false);
   const [showDeleteOptions, setShowDeleteOptions] = useState(false);
   const [editTitle, setEditTitle] = useState("");
   const [editDescription, setEditDescription] = useState("");
   const [reportDraft, setReportDraft] = useState("");
+  const [conflictTask, setConflictTask] = useState<Task | null>(null);
   const reportOffsetValue = Number(searchParams.get("reports_offset") ?? 0);
   const reportOffset = Number.isSafeInteger(reportOffsetValue) && reportOffsetValue >= 0 ? reportOffsetValue : 0;
 
   const taskQuery = useQuery({
-    queryKey: ["task", taskId],
+    queryKey: ["task", workspace.id, taskId],
     queryFn: () => api<{ task: Task }>("/tasks/" + taskId),
     enabled: Boolean(taskId),
   });
+  const members = useQuery({ queryKey: ["members", workspace.id], queryFn: () => api<{ members: WorkspaceMember[] }>(`/workspaces/${workspace.id}/members`), enabled: workspace.kind === "team" });
   const reportsQuery = useQuery({
     queryKey: ["reports", taskId, 25, reportOffset],
     queryFn: () => api<ReportPage>(`/tasks/${taskId}/reports?limit=25&offset=${reportOffset}`),
@@ -115,16 +153,20 @@ export function TaskDetailPage() {
   }, [reportOffset, reportsQuery.data, searchParams, setSearchParams]);
 
   const updateTask = useMutation({
-    mutationFn: (changes: Partial<Pick<Task, "title" | "description" | "status">>) =>
-      api<{ task: Task }>("/tasks/" + taskId, { method: "PATCH", body: JSON.stringify(changes) }),
+    mutationFn: (changes: Partial<Pick<Task, "title" | "description" | "status" | "assignee_user_id">>) =>
+      api<{ task: Task }>("/tasks/" + taskId, { method: "PATCH", body: JSON.stringify({ ...changes, expected_version: taskQuery.data?.task.version }) }),
     onSuccess: async ({ task }) => {
-      queryClient.setQueryData(["task", taskId], { task });
+      queryClient.setQueryData(["task", workspace.id, taskId], { task });
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["tasks"] }),
         queryClient.invalidateQueries({ queryKey: ["overview"] }),
         queryClient.invalidateQueries({ queryKey: ["activity"] }),
       ]);
       setEditing(false);
+      setConflictTask(null);
+    },
+    onError: (error) => {
+      if (error instanceof ApiError && error.status === 409 && error.payload?.latest_task && typeof error.payload.latest_task === "object") setConflictTask(error.payload.latest_task as Task);
     },
   });
 
@@ -200,6 +242,8 @@ export function TaskDetailPage() {
   if (taskQuery.isError) return <div className="space-y-4"><Link className="quiet-link" to="/tasks"><ArrowLeft size={15} /> 返回任务列表</Link><ApiFeedback error={taskQuery.error} onRetry={() => void taskQuery.refetch()} /></div>;
 
   const task = taskQuery.data.task;
+  const session = queryClient.getQueryData<Session>(["session", "bootstrap"]);
+  const assignees = workspace.kind === "team" ? members.data?.members ?? [] : session ? [{ user_id: session.user.id, email: session.user.email }] : [];
   const reportData = reportsQuery.data;
   const reportPages = reportData ? Math.max(1, Math.ceil(reportData.total / reportData.limit)) : 1;
   const currentReportPage = reportData ? Math.floor(reportData.offset / reportData.limit) + 1 : 1;
@@ -272,8 +316,12 @@ export function TaskDetailPage() {
               {(Object.entries(statusLabels) as [TaskStatus, string][]).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
             </select>
           </label>
+          <label className="block text-sm font-medium">负责人
+            <select className="input mt-1.5" value={task.assignee_user_id ?? ""} disabled={updateTask.isPending || members.isPending} onChange={(event) => updateTask.mutate({ assignee_user_id: event.target.value || null })}><option value="">未分配</option>{assignees.map((member) => <option key={member.user_id} value={member.user_id}>{member.email}</option>)}</select>
+          </label>
         </div>}
       {updateTask.isError && !editing && <div className="mt-4"><ApiFeedback error={updateTask.error} /></div>}
+      {conflictTask && <div className="mt-4 rounded-xl border border-[#f1d6a6] bg-[#fffaf0] p-4"><p className="text-sm font-semibold text-[#7a4b08]">此任务已被其他成员或 Agent 更新。</p><p className="mt-1 text-xs text-[#765f3b]">你的编辑内容仍保留。服务器当前版本为 v{conflictTask.version}：{conflictTask.title}</p><button type="button" className="secondary-btn mt-3" onClick={() => { queryClient.setQueryData(["task", workspace.id, taskId], { task: conflictTask }); setEditTitle(conflictTask.title); setEditDescription(conflictTask.description); setEditing(true); setConflictTask(null); updateTask.reset(); }}>查看最新版本并重新确认</button></div>}
     </section>
 
     <section className="card">
@@ -307,6 +355,7 @@ export function TaskDetailPage() {
           </div>
           <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-[#46574c]">{report.content}</p>
           <ReportComments reportId={report.id} />
+          <ReportReviews reportId={report.id} />
         </article>)}
       </div>}
 

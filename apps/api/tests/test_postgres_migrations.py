@@ -49,7 +49,8 @@ if (
 def _drop_test_schema(engine) -> None:
     with engine.begin() as connection:
         for table in (
-            "activities", "report_comments", "reports", "agent_tokens", "tasks", "workspaces", "users",
+            "activities", "report_comments", "report_reviews", "reports", "agent_tokens", "tasks",
+            "workspace_invitations", "workspace_members", "workspaces", "users",
             "alembic_version",
         ):
             connection.execute(text(f"DROP TABLE IF EXISTS {table} CASCADE"))
@@ -211,9 +212,18 @@ def test_existing_initial_sql_rows_survive_controlled_workspace_backfill(postgre
 
     command.stamp(alembic_config(), "0001_baseline")
     command.upgrade(alembic_config(), "0002_identity_workspace")
-    with TestClient(app) as client:
-        owner_headers = user_headers("legacy-owner", "legacy-owner@example.test")
-        owner = bootstrap(client, "legacy-owner", "legacy-owner@example.test")
+    owner_headers = user_headers("legacy-owner", "legacy-owner@example.test")
+    owner_id = uuid4()
+    workspace_id = uuid4()
+    with psycopg.connect(connection_url) as connection:
+        connection.execute(
+            "INSERT INTO users (id, access_issuer, access_subject, email) VALUES (%s, %s, %s, %s)",
+            (owner_id, ACCESS_ISSUER, "legacy-owner", "legacy-owner@example.test"),
+        )
+        connection.execute(
+            "INSERT INTO workspaces (id, owner_id, name) VALUES (%s, %s, %s)",
+            (workspace_id, owner_id, "Personal workspace"),
+        )
 
     monkeypatch.setenv("TASKLUTEIN_LEGACY_OWNER_ISSUER", ACCESS_ISSUER)
     monkeypatch.setenv("TASKLUTEIN_LEGACY_OWNER_SUBJECT", "legacy-owner")
@@ -242,7 +252,7 @@ def test_existing_initial_sql_rows_survive_controlled_workspace_backfill(postgre
 
     assert str(task.id) == str(task_id)
     assert (task.title, task.description, task.status) == ("Legacy task", "Keep this description", "in_progress")
-    assert str(task.workspace_id) == owner["workspace"]["id"]
+    assert str(task.workspace_id) == str(workspace_id)
     assert str(report.id) == str(report_id)
     assert str(report.task_id) == str(task_id)
     assert (report.content, report.source) == ("Legacy report", "agent")
@@ -302,22 +312,72 @@ def test_migration_refuses_downgrade_from_report_comment_schema(postgres_databas
         command.downgrade(alembic_config(), "0001_baseline")
     with create_engine(postgres_database).connect() as connection:
         revision = connection.scalar(text("SELECT version_num FROM alembic_version"))
-    assert revision == "0006_agent_token_hard_delete"
+    assert revision == "0007_team_review_concurrency"
+
+
+def test_team_review_migration_refuses_downgrade_that_would_drop_review_or_assignee_data(
+    postgres_database: str,
+):
+    command.upgrade(alembic_config(), "head")
+    with TestClient(app) as client:
+        headers, identity = _new_identity(client, "m35-downgrade-guard")
+        task = _create_task(client, headers)
+        assigned = client.patch(
+            f"/api/tasks/{task['id']}",
+            headers=headers,
+            json={"assignee_user_id": identity["user"]["id"], "expected_version": task["version"]},
+        )
+        assert assigned.status_code == 200, assigned.text
+        report = _create_report(client, headers, task["id"])
+        review = client.put(
+            f"/api/reports/{report['id']}/review",
+            headers=headers,
+            json={"score": 4, "verdict": "approved"},
+        )
+        assert review.status_code == 200, review.text
+
+    with pytest.raises(RuntimeError, match="review, or task-assignee data"):
+        command.downgrade(alembic_config(), "0006_agent_token_hard_delete")
+    with create_engine(postgres_database).connect() as connection:
+        revision = connection.scalar(text("SELECT version_num FROM alembic_version"))
+        task_version = connection.scalar(text("SELECT version FROM tasks WHERE id = :id"), {"id": task["id"]})
+        review_count = connection.scalar(text("SELECT count(*) FROM report_reviews WHERE report_id = :id"), {"id": report["id"]})
+    assert revision == "0007_team_review_concurrency"
+    assert task_version == assigned.json()["task"]["version"]
+    assert review_count == 1
 
 
 def test_report_comments_migration_keeps_existing_reports_and_indexes(postgres_database: str):
     command.upgrade(alembic_config(), "0004_task_history")
-    with TestClient(app) as client:
-        headers, _identity = _new_identity(client, "comment-migration")
-        task = _create_task(client, headers)
-        report = _create_report(client, headers, task["id"])
+    task_id = uuid4()
+    report_id = uuid4()
+    user_id = uuid4()
+    workspace_id = uuid4()
+    connection_url = database_url.set(drivername="postgresql").render_as_string(hide_password=False)
+    with psycopg.connect(connection_url) as connection:
+        connection.execute(
+            "INSERT INTO users (id, access_issuer, access_subject, email) VALUES (%s, %s, %s, %s)",
+            (user_id, ACCESS_ISSUER, "comment-migration", "comment-migration@example.test"),
+        )
+        connection.execute(
+            "INSERT INTO workspaces (id, owner_id, name) VALUES (%s, %s, %s)",
+            (workspace_id, user_id, "Personal workspace"),
+        )
+        connection.execute(
+            "INSERT INTO tasks (id, workspace_id, title, description, status) VALUES (%s, %s, %s, %s, %s)",
+            (task_id, workspace_id, "Migration task", "", "todo"),
+        )
+        connection.execute(
+            "INSERT INTO reports (id, task_id, content, source, actor_user_id) VALUES (%s, %s, %s, %s, %s)",
+            (report_id, task_id, "Migration report", "user", user_id),
+        )
 
     command.upgrade(alembic_config(), "head")
     with create_engine(postgres_database).connect() as connection:
         revision = connection.scalar(text("SELECT version_num FROM alembic_version"))
         preserved = connection.execute(
             text("SELECT id, content FROM reports WHERE id = :report_id"),
-            {"report_id": report["id"]},
+            {"report_id": str(report_id)},
         ).one()
         comments = inspect(connection)
         report_fk = next(
@@ -337,8 +397,8 @@ def test_report_comments_migration_keeps_existing_reports_and_indexes(postgres_d
         )
         indexes = comments.get_indexes("report_comments")
 
-    assert revision == "0006_agent_token_hard_delete"
-    assert (str(preserved.id), preserved.content) == (report["id"], report["content"])
+    assert revision == "0007_team_review_concurrency"
+    assert (str(preserved.id), preserved.content) == (str(report_id), "Migration report")
     assert report_fk["referred_table"] == "reports"
     assert report_fk["options"]["ondelete"] == "CASCADE"
     assert report_agent_fk["options"]["ondelete"] == "SET NULL"
@@ -574,13 +634,15 @@ def test_postgres_task_report_and_archive_events_have_exact_semantics(postgres_d
         no_op = client.patch(
             f"/api/tasks/{task_id}",
             headers=headers,
-            json={"title": task["title"], "description": task["description"], "status": task["status"]},
+        json={"title": task["title"], "description": task["description"], "status": task["status"],
+              "expected_version": task["version"]},
         )
         assert no_op.status_code == 200, no_op.text
         assert no_op.json()["task"]["updated_at"] == task["updated_at"]
         assert _activity_page(client, headers, task_id)["total"] == 1
 
-        updated = client.patch(f"/api/tasks/{task_id}", headers=headers, json={"title": f"Updated {uuid4().hex}"})
+        updated = client.patch(f"/api/tasks/{task_id}", headers=headers,
+                               json={"title": f"Updated {uuid4().hex}", "expected_version": task["version"]})
         assert updated.status_code == 200, updated.text
         updated_event = next(
             event for event in _activity_page(client, headers, task_id)["activities"]
@@ -590,7 +652,8 @@ def test_postgres_task_report_and_archive_events_have_exact_semantics(postgres_d
         assert updated_event["summary"] == {"changed_fields": ["title"]}
 
         status_changed = client.patch(
-            f"/api/tasks/{task_id}", headers=headers, json={"status": "in_progress"}
+            f"/api/tasks/{task_id}", headers=headers,
+            json={"status": "in_progress", "expected_version": updated.json()["task"]["version"]}
         )
         assert status_changed.status_code == 200, status_changed.text
         status_event = next(
@@ -638,7 +701,8 @@ def test_postgres_archive_preserves_full_task_and_report_snapshot(postgres_datab
         changed = client.patch(
             f"/api/tasks/{task_id}",
             headers=headers,
-            json={"title": f"Final {uuid4().hex}", "description": f"Final description {uuid4().hex}", "status": "done"},
+            json={"title": f"Final {uuid4().hex}", "description": f"Final description {uuid4().hex}",
+                  "status": "done", "expected_version": task["version"]},
         )
         assert changed.status_code == 200, changed.text
         expected_task = changed.json()["task"]
@@ -648,7 +712,8 @@ def test_postgres_archive_preserves_full_task_and_report_snapshot(postgres_datab
 
         for response in (
             client.get(f"/api/tasks/{task_id}", headers=headers),
-            client.patch(f"/api/tasks/{task_id}", headers=headers, json={"status": "todo"}),
+            client.patch(f"/api/tasks/{task_id}", headers=headers,
+                         json={"status": "todo", "expected_version": expected_task["version"]}),
             client.get(f"/api/tasks/{task_id}/reports", headers=headers),
             client.post(f"/api/tasks/{task_id}/reports", headers=headers, json={"content": f"late {uuid4().hex}"}),
         ):
@@ -736,7 +801,8 @@ def test_postgres_activity_deletion_and_history_reads_are_workspace_scoped(postg
         )
         assert client.get("/api/activity", headers=bob_headers).json()["total"] == 0
         assert client.get(f"/api/tasks/{task_id}", headers=bob_headers).status_code == 404
-        assert client.patch(f"/api/tasks/{task_id}", headers=bob_headers, json={"status": "done"}).status_code == 404
+        assert client.patch(f"/api/tasks/{task_id}", headers=bob_headers,
+                            json={"status": "done", "expected_version": 1}).status_code == 404
         assert client.get(f"/api/tasks/{task_id}/reports", headers=bob_headers).status_code == 404
         assert client.delete(f"/api/activity/{report_event_id}", headers=bob_headers).status_code == 404
         assert client.delete(f"/api/history/tasks/{task_id}", headers=bob_headers).status_code == 404
@@ -753,7 +819,8 @@ def test_postgres_activity_deletion_and_history_reads_are_workspace_scoped(postg
         )
         assert client.get("/api/activity", headers=bob_headers).json()["total"] == 0
         assert client.get(f"/api/tasks/{task_id}", headers=bob_headers).status_code == 404
-        assert client.patch(f"/api/tasks/{task_id}", headers=bob_headers, json={"status": "done"}).status_code == 404
+        assert client.patch(f"/api/tasks/{task_id}", headers=bob_headers,
+                            json={"status": "done", "expected_version": 1}).status_code == 404
         assert client.get(f"/api/tasks/{task_id}/reports", headers=bob_headers).status_code == 404
         assert client.get(f"/api/history/tasks/{task_id}", headers=bob_headers).status_code == 404
         assert client.get(f"/api/history/tasks/{task_id}/reports", headers=bob_headers).status_code == 404
@@ -800,7 +867,8 @@ def test_postgres_activity_insert_failure_rolls_back_task_update(postgres_databa
             )
         try:
             failed = client.patch(
-                f"/api/tasks/{task_id}", headers=headers, json={"title": f"Rollback {uuid4().hex}"}
+                f"/api/tasks/{task_id}", headers=headers,
+                json={"title": f"Rollback {uuid4().hex}", "expected_version": task["version"]}
             )
             assert failed.status_code == 500
         finally:
@@ -885,7 +953,8 @@ def test_postgres_concurrent_task_update_and_archive_freeze_one_consistent_snaps
     def update_task():
         with TestClient(app) as client:
             barrier.wait(timeout=10)
-            return client.patch(f"/api/tasks/{task_id}", headers=headers, json={"status": "done"})
+            return client.patch(f"/api/tasks/{task_id}", headers=headers,
+                                json={"status": "done", "expected_version": task["version"]})
 
     def archive_task():
         with TestClient(app) as client:
@@ -910,6 +979,121 @@ def test_postgres_concurrent_task_update_and_archive_freeze_one_consistent_snaps
         assert event_types.count("task.deleted") == 1
         assert event_types.count("task.status_changed") == (1 if update_response.status_code == 200 else 0)
         assert client.get(f"/api/tasks/{task_id}", headers=headers).status_code == 404
+
+
+def test_postgres_same_version_task_updates_have_one_winner(postgres_database: str):
+    command.upgrade(alembic_config(), "head")
+    with TestClient(app) as client:
+        owner_headers, _owner = _new_identity(client, "version-race-owner")
+        member_headers, _member = _new_identity(client, "version-race-member")
+        created_workspace = client.post("/api/workspaces", headers=owner_headers, json={"name": "Version race"})
+        assert created_workspace.status_code == 201, created_workspace.text
+        workspace_id = created_workspace.json()["workspace"]["id"]
+        invitation = client.post(
+            f"/api/workspaces/{workspace_id}/invitations", headers=owner_headers,
+            json={"email": member_headers["X-Tasklutein-Access-Email"]},
+        )
+        assert invitation.status_code == 201, invitation.text
+        accepted = client.post(
+            f"/api/invitations/{invitation.json()['invitation']['id']}/accept", headers=member_headers
+        )
+        assert accepted.status_code == 200, accepted.text
+        team_owner = {**owner_headers, "X-Tasklutein-Workspace-ID": workspace_id}
+        team_member = {**member_headers, "X-Tasklutein-Workspace-ID": workspace_id}
+        task = _create_task(client, team_owner)
+        task_id = task["id"]
+        initial = client.get(f"/api/tasks/{task_id}", headers=team_member).json()["task"]
+        assert initial["version"] == 1
+
+    barrier = threading.Barrier(2)
+
+    def update(headers: dict[str, str], title: str):
+        with TestClient(app) as client:
+            barrier.wait(timeout=10)
+            return client.patch(
+                f"/api/tasks/{task_id}", headers=headers,
+                json={"title": title, "expected_version": initial["version"]},
+            )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = list(executor.map(
+            lambda args: update(*args),
+            ((team_owner, "Owner versioned update"), (team_member, "Member versioned update")),
+        ))
+
+    assert sorted(response.status_code for response in outcomes) == [200, 409]
+    conflict = next(response for response in outcomes if response.status_code == 409)
+    assert conflict.json()["code"] == "task_version_conflict"
+    assert conflict.json()["latest_task"]["version"] == 2
+    with TestClient(app) as client:
+        final = client.get(f"/api/tasks/{task_id}", headers=team_owner).json()["task"]
+        activities = _activity_page(client, team_owner, task_id)
+    assert final["version"] == 2
+    assert final["title"] in {"Owner versioned update", "Member versioned update"}
+    assert activities["total"] == 2
+    assert sum(event["event_type"] == "task.updated" for event in activities["activities"]) == 1
+
+
+def test_postgres_member_removal_racing_assignee_update_keeps_version_and_history_consistent(
+    postgres_database: str,
+):
+    command.upgrade(alembic_config(), "head")
+    with TestClient(app) as client:
+        owner_headers, _owner = _new_identity(client, "assignee-race-owner")
+        member_headers, member = _new_identity(client, "assignee-race-member")
+        workspace = client.post("/api/workspaces", headers=owner_headers, json={"name": "Removal race"})
+        assert workspace.status_code == 201, workspace.text
+        workspace_id = workspace.json()["workspace"]["id"]
+        invitation = client.post(
+            f"/api/workspaces/{workspace_id}/invitations", headers=owner_headers,
+            json={"email": member_headers["X-Tasklutein-Access-Email"]},
+        )
+        assert invitation.status_code == 201, invitation.text
+        assert client.post(
+            f"/api/invitations/{invitation.json()['invitation']['id']}/accept", headers=member_headers
+        ).status_code == 200
+        team_owner = {**owner_headers, "X-Tasklutein-Workspace-ID": workspace_id}
+        task = _create_task(client, team_owner)
+        task_id = task["id"]
+
+    barrier = threading.Barrier(2)
+
+    def assign_member():
+        with TestClient(app) as client:
+            barrier.wait(timeout=10)
+            return client.patch(
+                f"/api/tasks/{task_id}", headers=team_owner,
+                json={"assignee_user_id": member["user"]["id"], "expected_version": task["version"]},
+            )
+
+    def remove_member():
+        with TestClient(app) as client:
+            barrier.wait(timeout=10)
+            return client.delete(
+                f"/api/workspaces/{workspace_id}/members/{member['user']['id']}", headers=owner_headers
+            )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        assign_future = executor.submit(assign_member)
+        remove_future = executor.submit(remove_member)
+        assignment = assign_future.result(timeout=30)
+        removal = remove_future.result(timeout=30)
+
+        assert assignment.status_code in {200, 404}, assignment.text
+    assert removal.status_code == 204, removal.text
+    with TestClient(app) as client:
+        current = client.get(f"/api/tasks/{task_id}", headers=team_owner).json()["task"]
+        events = _activity_page(client, team_owner, task_id)
+        assert client.get("/api/tasks", headers={**member_headers, "X-Tasklutein-Workspace-ID": workspace_id}).status_code == 404
+
+    assert current["assignee_user_id"] is None
+    if assignment.status_code == 200:
+        assert current["version"] == 3
+        assert events["total"] == 3
+    else:
+        assert current["version"] == 1
+        assert events["total"] == 1
+    assert sum(event["event_type"] == "task.updated" for event in events["activities"]) == current["version"] - 1
 
 
 def test_postgres_concurrent_report_and_physical_delete_remove_the_whole_group(postgres_database: str):

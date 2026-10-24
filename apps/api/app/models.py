@@ -4,10 +4,12 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     String,
     Text,
     UniqueConstraint,
@@ -45,13 +47,61 @@ class User(Base):
 class Workspace(Base):
     __tablename__ = "workspaces"
     __table_args__ = (
-        UniqueConstraint("owner_id", name="uq_workspaces_owner_id"),
+        CheckConstraint("kind IN ('personal', 'team')", name="workspaces_kind_check"),
+        Index(
+            "uq_workspaces_personal_owner_id",
+            "owner_id",
+            unique=True,
+            postgresql_where=text("kind = 'personal'"),
+            sqlite_where=text("kind = 'personal'"),
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     owner_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
     name: Mapped[str] = mapped_column(String(120), nullable=False)
+    kind: Mapped[str] = mapped_column(String(12), nullable=False, default="personal", server_default=text("'personal'"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now, server_default=func.now())
+
+
+class WorkspaceMember(Base):
+    __tablename__ = "workspace_members"
+    __table_args__ = (
+        CheckConstraint("role IN ('owner', 'member')", name="workspace_members_role_check"),
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("workspaces.id", ondelete="CASCADE"), primary_key=True
+    )
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    role: Mapped[str] = mapped_column(String(12), nullable=False)
+    joined_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now, server_default=func.now())
+
+
+class WorkspaceInvitation(Base):
+    __tablename__ = "workspace_invitations"
+    __table_args__ = (
+        CheckConstraint("status IN ('pending', 'accepted', 'declined')", name="workspace_invitations_status_check"),
+        Index(
+            "uq_workspace_invitations_pending",
+            "workspace_id",
+            "invitee_user_id",
+            unique=True,
+            postgresql_where=text("status = 'pending'"),
+            sqlite_where=text("status = 'pending'"),
+        ),
+        Index("idx_workspace_invitations_invitee", "invitee_user_id", "status"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False)
+    invitee_user_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    invited_by_user_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    status: Mapped[str] = mapped_column(String(12), nullable=False, default="pending", server_default=text("'pending'"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now, server_default=func.now())
+    responded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class AgentToken(Base):
@@ -82,6 +132,7 @@ class Task(Base):
         Index("idx_tasks_updated", desc("updated_at")),
         Index("idx_tasks_workspace_updated", "workspace_id", desc("updated_at"), desc("id")),
         Index("idx_tasks_workspace_archived", "workspace_id", desc("archived_at"), desc("id")),
+        Index("idx_tasks_workspace_assignee", "workspace_id", "assignee_user_id", desc("updated_at")),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
@@ -89,11 +140,18 @@ class Task(Base):
     title: Mapped[str] = mapped_column(String(120), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default=text("''"))
     status: Mapped[str] = mapped_column(String(24), nullable=False, default="todo", server_default=text("'todo'"))
+    assignee_user_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))
+    version: Mapped[int] = mapped_column(BigInteger, nullable=False, default=1, server_default=text("1"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now, server_default=func.now())
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     reports: Mapped[list["Report"]] = relationship(back_populates="task", cascade="all, delete-orphan", passive_deletes=True)
     activities: Mapped[list["Activity"]] = relationship(back_populates="task", cascade="all, delete-orphan", passive_deletes=True)
+    assignee: Mapped[User | None] = relationship(foreign_keys=[assignee_user_id])
+
+    @property
+    def assignee_name(self) -> str | None:
+        return self.assignee.email if self.assignee is not None else None
 
 
 class Report(Base):
@@ -122,6 +180,29 @@ class Report(Base):
     comments: Mapped[list["ReportComment"]] = relationship(
         back_populates="report", cascade="all, delete-orphan", passive_deletes=True
     )
+    reviews: Mapped[list["ReportReview"]] = relationship(
+        back_populates="report", cascade="all, delete-orphan", passive_deletes=True
+    )
+
+
+class ReportReview(Base):
+    __tablename__ = "report_reviews"
+    __table_args__ = (
+        CheckConstraint("score BETWEEN 1 AND 5", name="report_reviews_score_check"),
+        CheckConstraint("verdict IN ('approved', 'needs_work')", name="report_reviews_verdict_check"),
+        UniqueConstraint("report_id", "reviewer_user_id", name="uq_report_reviews_reviewer"),
+        Index("idx_report_reviews_reviewer_updated", "reviewer_user_id", desc("updated_at")),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    report_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("reports.id", ondelete="CASCADE"), nullable=False)
+    reviewer_user_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    score: Mapped[int] = mapped_column(Integer, nullable=False)
+    verdict: Mapped[str] = mapped_column(String(16), nullable=False)
+    note: Mapped[str | None] = mapped_column(String(1000))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now, server_default=func.now())
+    report: Mapped[Report] = relationship(back_populates="reviews")
 
 
 class ReportComment(Base):

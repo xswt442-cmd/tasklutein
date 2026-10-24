@@ -15,7 +15,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .database import get_db
-from .models import AgentToken, User, Workspace
+from .models import AgentToken, User, Workspace, WorkspaceMember
 
 ActorType = Literal["user", "agent"]
 security = HTTPBearer(auto_error=False)
@@ -37,6 +37,7 @@ class Principal:
     agent_token_id: UUID | None
     agent_token_name: str | None
     email: str
+    workspace_role: Literal["owner", "member"]
 
 
 def provision_user_workspace(db: Session, identity: AccessIdentity) -> tuple[User, Workspace]:
@@ -70,11 +71,15 @@ def provision_user_workspace(db: Session, identity: AccessIdentity) -> tuple[Use
         db.rollback()
         raise HTTPException(status_code=403, detail="user_disabled")
 
-    workspace = db.scalar(select(Workspace).where(Workspace.owner_id == user.id))
+    workspace = db.scalar(
+        select(Workspace).where(Workspace.owner_id == user.id, Workspace.kind == "personal")
+    )
     if workspace is None:
-        workspace = Workspace(owner_id=user.id, name="Personal workspace")
+        workspace = Workspace(owner_id=user.id, name="Personal workspace", kind="personal")
         db.add(workspace)
         try:
+            db.flush()
+            db.add(WorkspaceMember(workspace_id=workspace.id, user_id=user.id, role="owner"))
             db.flush()
         except IntegrityError as exc:
             db.rollback()
@@ -91,6 +96,10 @@ def provision_user_workspace(db: Session, identity: AccessIdentity) -> tuple[Use
             workspace = db.scalar(select(Workspace).where(Workspace.owner_id == user.id))
             if workspace is None:
                 raise
+    membership = db.get(WorkspaceMember, (workspace.id, user.id))
+    if membership is None:
+        membership = WorkspaceMember(workspace_id=workspace.id, user_id=user.id, role="owner")
+        db.add(membership)
 
     if user.email != identity.email:
         user.email = identity.email
@@ -129,7 +138,7 @@ def require_access_identity(request: Request) -> AccessIdentity:
     return AccessIdentity(issuer=issuer, subject=subject, email=email)
 
 
-def _user_principal(db: Session, identity: AccessIdentity) -> Principal:
+def _user_principal(db: Session, identity: AccessIdentity, request: Request) -> Principal:
     user = db.scalar(
         select(User).where(
             User.access_issuer == identity.issuer,
@@ -141,9 +150,25 @@ def _user_principal(db: Session, identity: AccessIdentity) -> Principal:
     if user.disabled_at is not None:
         raise HTTPException(status_code=403, detail="user_disabled")
 
-    workspace = db.scalar(select(Workspace).where(Workspace.owner_id == user.id))
-    if workspace is None:
-        raise HTTPException(status_code=403, detail="workspace_not_configured")
+    selected = request.headers.get("X-Tasklutein-Workspace-ID")
+    if selected:
+        try:
+            workspace_id = UUID(selected)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="invalid_workspace_id") from exc
+        membership = db.get(WorkspaceMember, (workspace_id, user.id))
+        workspace = db.get(Workspace, workspace_id) if membership is not None else None
+        if workspace is None:
+            raise HTTPException(status_code=404, detail="workspace_not_found")
+    else:
+        workspace = db.scalar(
+            select(Workspace)
+            .join(WorkspaceMember, WorkspaceMember.workspace_id == Workspace.id)
+            .where(WorkspaceMember.user_id == user.id, Workspace.kind == "personal")
+        )
+        membership = db.get(WorkspaceMember, (workspace.id, user.id)) if workspace is not None else None
+        if workspace is None or membership is None:
+            raise HTTPException(status_code=403, detail="workspace_not_configured")
     return Principal(
         actor_type="user",
         user_id=user.id,
@@ -151,6 +176,7 @@ def _user_principal(db: Session, identity: AccessIdentity) -> Principal:
         agent_token_id=None,
         agent_token_name=None,
         email=user.email,
+        workspace_role=membership.role,
     )
 
 
@@ -177,7 +203,8 @@ def _agent_principal(db: Session, token: str) -> Principal:
 
     user = db.get(User, agent_token.created_by)
     workspace = db.get(Workspace, agent_token.workspace_id)
-    if user is None or workspace is None or workspace.owner_id != user.id:
+    membership = db.get(WorkspaceMember, (agent_token.workspace_id, agent_token.created_by))
+    if user is None or workspace is None or membership is None:
         raise HTTPException(status_code=401, detail="unauthorized", headers={"WWW-Authenticate": "Bearer"})
     if user.disabled_at is not None:
         raise HTTPException(status_code=403, detail="user_disabled")
@@ -189,6 +216,7 @@ def _agent_principal(db: Session, token: str) -> Principal:
         agent_token_id=agent_token.id,
         agent_token_name=agent_token.name,
         email=user.email,
+        workspace_role=membership.role,
     )
 
 
@@ -200,8 +228,17 @@ def require_principal(
     if credentials is not None:
         if credentials.scheme.lower() != "bearer":
             raise HTTPException(status_code=401, detail="unauthorized")
-        return _agent_principal(db, credentials.credentials)
-    return _user_principal(db, require_access_identity(request))
+        principal = _agent_principal(db, credentials.credentials)
+        selected = request.headers.get("X-Tasklutein-Workspace-ID")
+        if selected:
+            try:
+                workspace_id = UUID(selected)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail="invalid_workspace_id") from exc
+            if workspace_id != principal.workspace_id:
+                raise HTTPException(status_code=404, detail="workspace_not_found")
+        return principal
+    return _user_principal(db, require_access_identity(request), request)
 
 
 def require_user_principal(principal: Principal = Depends(require_principal)) -> Principal:

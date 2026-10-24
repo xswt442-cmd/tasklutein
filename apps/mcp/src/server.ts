@@ -25,7 +25,23 @@ export function createTaskluteinMcpServer(config: McpApiConfig): McpServer {
       redirect: "manual",
     });
     if (!response.ok) {
-      // Deliberately do not echo an upstream error body; it could contain secrets.
+      if (response.status === 409) {
+        let conflict: unknown;
+        try {
+          conflict = await response.json();
+        } catch {
+          conflict = undefined;
+        }
+        if (typeof conflict === "object" && conflict !== null &&
+            "code" in conflict && conflict.code === "task_version_conflict") {
+          const details: Record<string, unknown> = { code: conflict.code };
+          if ("detail" in conflict && typeof conflict.detail === "string") details.detail = conflict.detail;
+          if ("request_id" in conflict && typeof conflict.request_id === "string") details.request_id = conflict.request_id;
+          if ("latest_task" in conflict) details.latest_task = conflict.latest_task;
+          throw new Error("Task version conflict (HTTP 409): " + JSON.stringify(details));
+        }
+      }
+      // Deliberately do not echo other upstream error bodies; they could contain secrets.
       throw new Error("Tasklutein API request failed: HTTP " + response.status);
     }
     if (response.status === 204) return null;
@@ -94,9 +110,11 @@ export function createTaskluteinMcpServer(config: McpApiConfig): McpServer {
     result(await callApi("POST", "/tasks", { title, description: description ?? "" })));
 
   server.registerTool("update_task", {
-    description: "Update a task title, description, or status. Only mark done when work has been verified.",
+    description: "Update a task using the version returned by list_tasks or get_task. If the API reports a version conflict, reread and compare before deciding whether to submit again. Only mark done when work has been verified.",
     inputSchema: {
       id: z.string().uuid(),
+      expected_version: z.number().int().min(1),
+      assignee_user_id: z.string().uuid().nullable().optional(),
       title: z.string().trim().min(1).max(120).optional(),
       description: z.string().max(4000).optional(),
       status: z.enum(["todo", "in_progress", "done"]).optional(),
@@ -126,6 +144,12 @@ export function createTaskluteinMcpServer(config: McpApiConfig): McpServer {
     const query = params.size ? "?" + params.toString() : "";
     return result(await callApi("GET", "/reports/" + report_id + "/comments" + query));
   });
+
+  server.registerTool("list_report_reviews", {
+    description: "Read human reviews for a progress report. Reviews are read-only for Agents.",
+    inputSchema: { report_id: z.string().uuid() },
+  }, async ({ report_id }) =>
+    result(await callApi("GET", "/reports/" + report_id + "/reviews")));
 
   server.registerTool("add_report_comment", {
     description: "Add a comment to a progress report.",

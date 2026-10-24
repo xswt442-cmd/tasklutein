@@ -1,4 +1,4 @@
-import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, ArrowRight, Archive, Clock3, FileText, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
@@ -6,6 +6,8 @@ import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import { api } from "../api";
 import type { Activity, ActivityEventType, ActivityPage, ActivitySource, ArchivedTask, ArchivedTaskPage, ReportCommentPage, ReportPage, TaskStatus } from "../api";
 import { ApiFeedback } from "../components/ApiFeedback";
+import { ReportReviews } from "./TaskDetailPage";
+import { useWorkspace } from "../workspace";
 
 const statusLabels: Record<TaskStatus, string> = {
   todo: "待处理",
@@ -115,6 +117,7 @@ function HistoryPager({
 }
 
 export function HistoryPage() {
+  const { workspace } = useWorkspace();
   const { taskId } = useParams();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -141,17 +144,18 @@ export function HistoryPage() {
   useEffect(() => setTaskDraft(taskFilter), [taskFilter]);
 
   const archivesQuery = useQuery({
-    queryKey: ["history", "tasks", q, limit, archiveOffset],
+    queryKey: ["history", "tasks", workspace.id, q, limit, archiveOffset],
     queryFn: () => {
       const params = new URLSearchParams({ limit: String(limit), offset: String(archiveOffset) });
       if (q) params.set("q", q);
       return api<ArchivedTaskPage>("/history/tasks?" + params.toString());
     },
     enabled: !taskId && view === "archive",
-    placeholderData: keepPreviousData,
+    placeholderData: (previousData, previousQuery) =>
+      previousQuery?.queryKey[2] === workspace.id ? previousData : undefined,
   });
   const activityQuery = useQuery({
-    queryKey: ["activity", eventType, source, taskFilter, limit, activityOffset],
+    queryKey: ["activity", workspace.id, eventType, source, taskFilter, limit, activityOffset],
     queryFn: () => {
       const params = new URLSearchParams({ limit: String(limit), offset: String(activityOffset) });
       if (eventType) params.set("event_type", eventType);
@@ -160,7 +164,8 @@ export function HistoryPage() {
       return api<ActivityPage>("/activity?" + params.toString());
     },
     enabled: !taskId && view === "activity",
-    placeholderData: keepPreviousData,
+    placeholderData: (previousData, previousQuery) =>
+      previousQuery?.queryKey[1] === workspace.id ? previousData : undefined,
   });
   const taskQuery = useQuery({
     queryKey: ["history", "task", taskId],
@@ -318,6 +323,7 @@ export function HistoryPage() {
             </div>
             <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-[#46574c]">{report.content}</p>
             <ArchivedReportComments reportId={report.id} />
+            <ReportReviews reportId={report.id} readOnly />
           </article>)}
         </div>}
         {reportData && reportData.total > reportData.limit && <div className="mt-4 flex items-center justify-end gap-3 border-t border-[#edf1ea] pt-4">

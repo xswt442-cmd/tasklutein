@@ -5,6 +5,9 @@ export type Task = {
   title: string;
   description: string;
   status: TaskStatus;
+  version: number;
+  assignee_user_id: string | null;
+  assignee_name: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -56,8 +59,15 @@ export type Overview = {
   recent_activities: Activity[];
 };
 export type User = { id: string; email: string; created_at: string };
-export type Workspace = { id: string; name: string; created_at: string };
-export type Session = { user: User; workspace: Workspace };
+export type Workspace = { id: string; name: string; kind: "personal" | "team"; role: "owner" | "member" };
+export type WorkspaceList = { workspaces: Workspace[]; current_workspace_id: string };
+export type WorkspaceMember = { user_id: string; email: string; role: "owner" | "member"; joined_at: string };
+export type WorkspaceInvitation = { id: string; workspace_id: string; workspace_name: string; invitee_email: string; status: "pending" | "accepted" | "declined"; created_at: string };
+export type ReportReview = { id: string; report_id: string; reviewer_user_id: string; reviewer_email: string; score: number; verdict: "approved" | "needs_work"; note: string | null; created_at: string; updated_at: string };
+export type ReviewList = { reviews: ReportReview[]; my_review: ReportReview | null };
+export type InboxReport = { report: Report; task_title: string; task_id: string };
+export type Inbox = { tasks: Task[]; reports: InboxReport[]; total: number; limit: number; offset: number };
+export type Session = { user: User; workspace: { id: string; name: string; created_at: string } };
 export type AgentToken = {
   id: string; name: string; prefix: string; created_at: string;
   expires_at: string | null; revoked_at?: string | null;
@@ -69,10 +79,14 @@ export class ApiError extends Error {
     message: string,
     readonly code?: string,
     readonly requestId?: string,
+    readonly payload?: Record<string, unknown>,
   ) {
     super(message);
   }
 }
+
+let activeWorkspaceId: string | null = null;
+export function setApiWorkspaceId(id: string | null) { activeWorkspaceId = id; }
 
 async function apiError(response: Response): Promise<ApiError> {
   const json = await response.json().catch(() => ({})) as {
@@ -94,11 +108,15 @@ async function apiError(response: Response): Promise<ApiError> {
       return path ? `${path}: ${message}` : message;
     }).join("; ");
   }
+  const structuredDetail = json.detail && typeof json.detail === "object" && !Array.isArray(json.detail)
+    ? json.detail as Record<string, unknown>
+    : undefined;
   return new ApiError(
     response.status,
-    detail || json.error || "HTTP " + response.status,
-    typeof json.code === "string" ? json.code : undefined,
+    detail || (typeof structuredDetail?.code === "string" ? structuredDetail.code : undefined) || json.error || "HTTP " + response.status,
+    typeof json.code === "string" ? json.code : typeof structuredDetail?.code === "string" ? structuredDetail.code : undefined,
     typeof json.request_id === "string" ? json.request_id : undefined,
+    { ...json, ...(structuredDetail ?? {}) },
   );
 }
 
@@ -119,9 +137,13 @@ export async function probeSession(): Promise<Session | null> {
 // Browser always talks to the same Cloudflare Worker origin.
 // The Worker routes /api/* to Tencent; Vite proxies /api/* locally.
 export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const headers = new Headers(options.headers);
+  headers.set("Content-Type", "application/json");
+  if (activeWorkspaceId) headers.set("X-Tasklutein-Workspace-ID", activeWorkspaceId);
+  else headers.delete("X-Tasklutein-Workspace-ID");
   const response = await fetch("/api" + path, {
     ...options,
-    headers: { "Content-Type": "application/json", ...(options.headers ?? {}) },
+    headers,
     cache: "no-store",
     credentials: "same-origin",
     redirect: "manual",

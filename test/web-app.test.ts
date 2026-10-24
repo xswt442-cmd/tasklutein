@@ -12,7 +12,7 @@ import { createElement } from "react";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import App from "../apps/web/src/App";
-import { api, ApiError } from "../apps/web/src/api";
+import { api, ApiError, setApiWorkspaceId } from "../apps/web/src/api";
 import { createHttpMcpServer } from "../apps/mcp/src/http";
 
 const root = process.cwd();
@@ -108,6 +108,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   window.history.replaceState({}, "", "/");
+  setApiWorkspaceId(null);
   browserRequests = [];
   vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
     const localUrl = typeof input === "string" && input.startsWith("/") ? new URL(input, apiOrigin) : input;
@@ -165,6 +166,7 @@ beforeEach(async () => {
 
 afterEach(() => {
   cleanup();
+  setApiWorkspaceId(null);
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -174,17 +176,67 @@ async function enterWorkspace() {
   await screen.findByRole("heading", { name: "Overview" });
 }
 
-function testHeaders() {
+function testHeaders(subject = testSubject, email = testEmail) {
   return {
     "X-Tasklutein-Gateway": gatewayToken,
     "X-Tasklutein-Access-Issuer": testIssuer,
-    "X-Tasklutein-Access-Subject": testSubject,
-    "X-Tasklutein-Access-Email": testEmail,
+    "X-Tasklutein-Access-Subject": subject,
+    "X-Tasklutein-Access-Email": email,
     Origin: "http://localhost:5173",
   };
 }
 
 describe("Tasklutein browser workflow over the real FastAPI HTTP API", () => {
+  it("creates a team, sends a registered-user invitation, and accepts it", async () => {
+    const memberHeaders = testHeaders("web-team-member", "web-team-member@example.test");
+    const memberBootstrap = await nativeFetch(new URL("/api/session/bootstrap", apiOrigin), {
+      method: "POST", headers: { ...memberHeaders, "Content-Type": "application/json" }, body: "{}",
+    });
+    expect(memberBootstrap.status).toBe(200);
+
+    await enterWorkspace();
+    fireEvent.click(screen.getAllByRole("link", { name: "团队" })[0]!);
+    await screen.findByRole("heading", { name: "工作区与团队" });
+    const teamName = `Browser team ${Date.now()}`;
+    fireEvent.change(screen.getByLabelText("团队名称"), { target: { value: teamName } });
+    fireEvent.click(screen.getByRole("button", { name: "创建团队" }));
+    await screen.findByText(`${teamName} 成员`);
+
+    expect(screen.getAllByRole("option").some((option) => option.textContent?.includes(teamName))).toBe(true);
+    const membersRequest = browserRequests.find(({ url, method }) =>
+      method === "GET" && /\/api\/workspaces\/[^/]+\/members$/.test(new URL(url).pathname),
+    );
+    expect(membersRequest).toBeDefined();
+    const workspaceId = new URL(membersRequest!.url).pathname.split("/")[3]!;
+    fireEvent.change(screen.getByLabelText("受邀用户邮箱"), { target: { value: "web-team-member@example.test" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送邀请" }));
+
+    let invitations: { invitations: Array<{ id: string; status: string }> } | undefined;
+    await waitFor(async () => {
+      const response = await nativeFetch(new URL(`/api/workspaces/${workspaceId}/invitations`, apiOrigin), {
+        headers: testHeaders(),
+      });
+      expect(response.status).toBe(200);
+      invitations = await response.json() as typeof invitations;
+      expect(invitations?.invitations).toHaveLength(1);
+    });
+    const invitation = invitations?.invitations[0];
+    expect(invitation).toBeDefined();
+    const accepted = await nativeFetch(new URL(`/api/invitations/${invitation?.id}/accept`, apiOrigin), {
+      method: "POST", headers: memberHeaders,
+    });
+    expect(accepted.status).toBe(200);
+    const members = await nativeFetch(new URL(`/api/workspaces/${workspaceId}/members`, apiOrigin), {
+      headers: memberHeaders,
+    });
+    expect((await members.json() as { members: Array<{ email: string; role: string }> }).members)
+      .toContainEqual(expect.objectContaining({ email: "web-team-member@example.test", role: "member" }));
+    expect(browserRequests.some(({ url, method, headers }) =>
+      method === "POST" && url.endsWith(`/api/workspaces/${workspaceId}/invitations`) &&
+      headers.get("X-Tasklutein-Workspace-ID") === workspaceId,
+    )).toBe(true);
+  }, 15_000);
+
   it("creates, searches, updates, reports, and refreshes real API data", async () => {
     await enterWorkspace();
     const title = `E2E Release 50%_literal ${Date.now()}`;
@@ -361,7 +413,7 @@ describe("Tasklutein browser workflow over the real FastAPI HTTP API", () => {
     const removedActivities = await nativeFetch(new URL(`/api/activity?task_id=${taskId}`, apiOrigin), { headers: testHeaders() });
     expect((await removedActivities.json() as { total: number }).total).toBe(0);
     expect(browserRequests.some(({ url, method }) => method === "DELETE" && url.endsWith(`/api/history/tasks/${taskId}`))).toBe(true);
-  });
+  }, 15_000);
 
   it("filters and deletes one real activity, then clears current task history while keeping the task", async () => {
     await enterWorkspace();

@@ -79,13 +79,21 @@ try {
   if (task.title !== title || task.status !== "todo") throw new Error("created task mismatch");
 
   stage = "update task status";
-  task = (await webApiRequest("PATCH", "/api/tasks/" + taskId, { status: "in_progress" }, 200)).task;
+  task = (await webApiRequest(
+    "PATCH", "/api/tasks/" + taskId, { status: "in_progress", expected_version: task.version }, 200,
+  )).task;
   if (task.status !== "in_progress") throw new Error("updated task mismatch");
 
   stage = "create user report";
   const userResult = await webApiRequest("POST", "/api/tasks/" + taskId + "/reports", { content: userReport }, 201);
   if (userResult.report.source !== "user") throw new Error("user report attribution mismatch");
   const reportId = userResult.report.id;
+
+  stage = "review user report as Web identity";
+  const userReview = await webApiRequest("PUT", "/api/reports/" + reportId + "/review", {
+    score: 5, verdict: "approved", note: "[smoke-test] review visible to MCP",
+  }, 200);
+  if (userReview.review.verdict !== "approved") throw new Error("user report review mismatch");
 
   stage = "create Web report comment";
   const userCommentResult = await webApiRequest(
@@ -104,7 +112,7 @@ try {
   const toolNames = (await client.listTools()).tools.map((tool) => tool.name);
   for (const required of [
     "add_report", "add_report_comment", "create_task", "get_task", "list_report_comments",
-    "list_reports", "list_tasks", "update_task",
+    "list_report_reviews", "list_reports", "list_tasks", "update_task",
   ]) {
     if (!toolNames.includes(required)) throw new Error("required tool missing");
   }
@@ -144,6 +152,14 @@ try {
   if (!agentComments.some((comment) => comment.source === "agent" && comment.content === agentComment)) {
     throw new Error("Agent comment readback or attribution mismatch");
   }
+
+  stage = "read human report reviews through MCP";
+  const reviewResult = await client.callTool({ name: "list_report_reviews", arguments: { report_id: reportId } });
+  const reviewText = reviewResult.content.find((item) => item.type === "text")?.text;
+  if (
+    reviewResult.isError || !reviewText ||
+    !JSON.parse(reviewText).reviews.some((review) => review.verdict === "approved" && review.note === "[smoke-test] review visible to MCP")
+  ) throw new Error("MCP review readback mismatch");
 
   stage = "read both reports through the Web API";
   const reports = (await webApiRequest("GET", "/api/tasks/" + taskId + "/reports", undefined, 200)).reports;

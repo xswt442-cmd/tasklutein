@@ -3,7 +3,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from app.main import app, logger
-from app.models import Activity, AgentToken, Report, ReportComment, User
+from app.models import Activity, AgentToken, Report, ReportComment, ReportReview, User
 from conftest import agent_headers, gateway_headers, issue_agent_key, user_headers
 from fastapi.testclient import TestClient
 from sqlalchemy import select
@@ -125,7 +125,7 @@ def test_workspace_isolation_and_scope_for_tasks_reports_and_overview(client: Te
     assert client.get("/api/tasks", headers=other_agent_headers).json()["tasks"][0]["id"] == other_id
     assert client.get(f"/api/tasks/{own_id}", headers=other_agent_headers).status_code == 404
     assert client.patch(
-        f"/api/tasks/{own_id}", headers=other_identity, json={"status": "done"}
+        f"/api/tasks/{own_id}", headers=other_identity, json={"status": "done", "expected_version": 1}
     ).status_code == 404
     assert client.delete(f"/api/tasks/{own_id}", headers=other_identity).status_code == 404
     assert client.get(f"/api/tasks/{own_id}/reports", headers=other_identity).status_code == 404
@@ -140,6 +140,253 @@ def test_workspace_isolation_and_scope_for_tasks_reports_and_overview(client: Te
     assert other_overview["total"] == 1
 
     assert client.get(f"/api/tasks/{other_id}", headers=user_headers()).status_code == 404
+
+
+def _bootstrap_identity(client: TestClient, subject: str, email: str) -> dict[str, str]:
+    headers = user_headers(subject=subject, email=email)
+    response = client.post("/api/session/bootstrap", headers=headers)
+    assert response.status_code == 200, response.text
+    return headers
+
+
+def _workspace_headers(headers: dict[str, str], workspace_id: str) -> dict[str, str]:
+    return {**headers, "X-Tasklutein-Workspace-ID": workspace_id}
+
+
+def _create_team_and_invite(client: TestClient, member_headers: dict[str, str]) -> tuple[str, str]:
+    created = client.post("/api/workspaces", headers=user_headers(), json={"name": "Small team"})
+    assert created.status_code == 201, created.text
+    workspace_id = created.json()["workspace"]["id"]
+    invitation = client.post(
+        f"/api/workspaces/{workspace_id}/invitations",
+        headers=user_headers(),
+        json={"email": member_headers["X-Tasklutein-Access-Email"]},
+    )
+    assert invitation.status_code == 201, invitation.text
+    invitation_id = invitation.json()["invitation"]["id"]
+    accepted = client.post(f"/api/invitations/{invitation_id}/accept", headers=member_headers)
+    assert accepted.status_code == 200, accepted.text
+    return workspace_id, invitation_id
+
+
+def test_registered_user_invitation_and_workspace_header_isolation(client: TestClient):
+    member_headers = _bootstrap_identity(client, "workspace-member", "member@example.test")
+    workspace_id, _invitation_id = _create_team_and_invite(client, member_headers)
+
+    owner_workspaces = client.get("/api/workspaces", headers=user_headers()).json()["workspaces"]
+    member_workspaces = client.get("/api/workspaces", headers=member_headers).json()["workspaces"]
+    assert any(item["id"] == workspace_id and item["role"] == "owner" for item in owner_workspaces)
+    assert any(item["id"] == workspace_id and item["role"] == "member" for item in member_workspaces)
+
+    team_owner = _workspace_headers(user_headers(), workspace_id)
+    team_member = _workspace_headers(member_headers, workspace_id)
+    created = client.post("/api/tasks", headers=team_owner, json={"title": "Team task"})
+    assert created.status_code == 201, created.text
+    task = created.json()["task"]
+    assert client.get(f"/api/tasks/{task['id']}", headers=team_member).status_code == 200
+    assert client.get("/api/tasks", headers=user_headers()).json()["total"] == 0
+    assert client.get(f"/api/tasks/{task['id']}", headers=user_headers()).status_code == 404
+
+    forged = _workspace_headers(_bootstrap_identity(client, "outsider", "outsider@example.test"), workspace_id)
+    assert client.get("/api/tasks", headers=forged).status_code == 404
+    assert client.get(f"/api/workspaces/{workspace_id}/members", headers=forged).status_code == 404
+
+
+def test_member_removal_invalidates_team_agent_key_and_clears_assignee(client: TestClient):
+    member_headers = _bootstrap_identity(client, "removable-member", "removable@example.test")
+    workspace_id, _ = _create_team_and_invite(client, member_headers)
+    owner_headers = _workspace_headers(user_headers(), workspace_id)
+    team_member_headers = _workspace_headers(member_headers, workspace_id)
+    member_id = client.get("/api/me", headers=team_member_headers).json()["user"]["id"]
+    key = client.post("/api/agent-tokens", headers=team_member_headers, json={"name": "Team agent"})
+    assert key.status_code == 201, key.text
+    secret = key.json()["secret"]
+    task_response = client.post("/api/tasks", headers=owner_headers, json={"title": "Assigned task"})
+    task = task_response.json()["task"]
+    assigned = client.patch(
+        f"/api/tasks/{task['id']}",
+        headers=owner_headers,
+        json={"assignee_user_id": member_id, "expected_version": task["version"]},
+    )
+    assert assigned.status_code == 200, assigned.text
+    assert assigned.json()["task"]["assignee_user_id"] == member_id
+
+    removed = client.delete(
+        f"/api/workspaces/{workspace_id}/members/{member_id}",
+        headers=user_headers(),
+    )
+    assert removed.status_code == 204, removed.text
+    current = client.get(f"/api/tasks/{task['id']}", headers=owner_headers).json()["task"]
+    assert current["assignee_user_id"] is None
+    assert current["version"] == assigned.json()["task"]["version"] + 1
+    assert client.get("/api/agent/whoami", headers=agent_headers(secret)).status_code == 401
+    assert client.get("/api/tasks", headers=team_member_headers).status_code == 404
+
+
+def test_assignee_must_be_a_workspace_member(client: TestClient):
+    outsider_headers = _bootstrap_identity(client, "not-a-member", "outsider2@example.test")
+    task = client.post("/api/tasks", headers=user_headers(), json={"title": "Private task"}).json()["task"]
+    response = client.patch(
+        f"/api/tasks/{task['id']}",
+        headers=user_headers(),
+        json={"assignee_user_id": client.get("/api/me", headers=outsider_headers).json()["user"]["id"], "expected_version": task["version"]},
+    )
+    assert response.status_code == 404
+    assert response.json()["detail"] == "workspace_member_not_found"
+
+
+def test_report_review_upsert_permissions_archive_and_cascade(client: TestClient):
+    member_headers = _bootstrap_identity(client, "review-member", "reviewer@example.test")
+    workspace_id, _ = _create_team_and_invite(client, member_headers)
+    owner_headers = _workspace_headers(user_headers(), workspace_id)
+    team_member_headers = _workspace_headers(member_headers, workspace_id)
+    task = client.post("/api/tasks", headers=owner_headers, json={"title": "Review task"}).json()["task"]
+    agent_key = client.post("/api/agent-tokens", headers=owner_headers, json={"name": "Report agent"})
+    report_response = client.post(
+        f"/api/tasks/{task['id']}/reports",
+        headers=agent_headers(agent_key.json()["secret"]),
+        json={"content": "Work submitted"},
+    )
+    assert report_response.status_code == 201, report_response.text
+    report_id = report_response.json()["report"]["id"]
+
+    first = client.put(
+        f"/api/reports/{report_id}/review", headers=team_member_headers,
+        json={"score": 3, "verdict": "needs_work", "note": "Add details"},
+    )
+    assert first.status_code == 200, first.text
+    review_id = first.json()["review"]["id"]
+    second = client.put(
+        f"/api/reports/{report_id}/review", headers=team_member_headers,
+        json={"score": 5, "verdict": "approved", "note": "Accepted"},
+    )
+    assert second.status_code == 200, second.text
+    assert second.json()["review"]["id"] == review_id
+    assert len(second.json()["reviews"]) == 1
+    assert second.json()["review"]["score"] == 5
+    assert client.get(f"/api/reports/{report_id}/reviews", headers=agent_headers(agent_key.json()["secret"])).status_code == 200
+    forbidden = client.put(
+        f"/api/reports/{report_id}/review", headers=agent_headers(agent_key.json()["secret"]),
+        json={"score": 1, "verdict": "needs_work"},
+    )
+    assert forbidden.status_code == 403
+
+    archived = client.delete(f"/api/tasks/{task['id']}?history=keep", headers=owner_headers)
+    assert archived.status_code == 204
+    assert client.put(
+        f"/api/reports/{report_id}/review", headers=team_member_headers,
+        json={"score": 4, "verdict": "approved"},
+    ).status_code == 404
+
+    disposable = client.post("/api/tasks", headers=owner_headers, json={"title": "Cascade task"}).json()["task"]
+    disposable_report = client.post(
+        f"/api/tasks/{disposable['id']}/reports", headers=team_member_headers,
+        json={"content": "Human report"},
+    ).json()["report"]
+    review = client.put(
+        f"/api/reports/{disposable_report['id']}/review", headers=owner_headers,
+        json={"score": 4, "verdict": "approved"},
+    )
+    assert review.status_code == 200, review.text
+    assert client.delete(f"/api/tasks/{disposable['id']}?history=delete", headers=owner_headers).status_code == 204
+    assert client.get(f"/api/reports/{disposable_report['id']}/reviews", headers=owner_headers).status_code == 404
+    with app.state.test_session_factory() as db:
+        assert db.scalar(select(ReportReview).where(ReportReview.report_id == UUID(disposable_report["id"]))) is None
+
+
+def test_task_patch_requires_current_version_and_noop_does_not_increment(client: TestClient):
+    task = client.post("/api/tasks", headers=user_headers(), json={"title": "Versioned task"}).json()["task"]
+    task_id = task["id"]
+    missing = client.patch(f"/api/tasks/{task_id}", headers=user_headers(), json={"title": "No version"})
+    assert missing.status_code == 428
+    assert missing.json()["code"] == "expected_version_required"
+    changed = client.patch(
+        f"/api/tasks/{task_id}", headers=user_headers(),
+        json={"title": "Current update", "expected_version": task["version"]},
+    )
+    assert changed.status_code == 200
+    current_version = changed.json()["task"]["version"]
+    stale = client.patch(
+        f"/api/tasks/{task_id}", headers=user_headers(),
+        json={"title": "Stale overwrite", "expected_version": task["version"]},
+    )
+    assert stale.status_code == 409
+    assert stale.json()["code"] == "task_version_conflict"
+    assert stale.json()["latest_task"]["version"] == current_version
+    no_op = client.patch(
+        f"/api/tasks/{task_id}", headers=user_headers(),
+        json={"title": changed.json()["task"]["title"], "expected_version": current_version},
+    )
+    assert no_op.status_code == 200
+    assert no_op.json()["task"]["version"] == current_version
+    assert client.get("/api/activity", headers=user_headers(), params={"task_id": task_id}).json()["total"] == 2
+
+
+def test_inbox_pages_assigned_tasks_and_latest_unreviewed_external_reports(client: TestClient):
+    member_headers = _bootstrap_identity(client, "inbox-member", "inbox-member@example.test")
+    workspace_id, _ = _create_team_and_invite(client, member_headers)
+    owner_headers = _workspace_headers(user_headers(), workspace_id)
+    team_member_headers = _workspace_headers(member_headers, workspace_id)
+    member_id = client.get("/api/me", headers=team_member_headers).json()["user"]["id"]
+    task = client.post("/api/tasks", headers=owner_headers, json={"title": "Inbox assignment"}).json()["task"]
+    assigned = client.patch(
+        f"/api/tasks/{task['id']}", headers=owner_headers,
+        json={"assignee_user_id": member_id, "expected_version": task["version"]},
+    )
+    assert assigned.status_code == 200, assigned.text
+    agent_key = client.post("/api/agent-tokens", headers=owner_headers, json={"name": "Inbox agent"})
+    assert agent_key.status_code == 201, agent_key.text
+    report = client.post(
+        f"/api/tasks/{task['id']}/reports", headers=agent_headers(agent_key.json()["secret"]),
+        json={"content": "Review this submitted work"},
+    )
+    assert report.status_code == 201, report.text
+    report_id = report.json()["report"]["id"]
+
+    first_page = client.get("/api/inbox", headers=team_member_headers, params={"limit": 1})
+    assert first_page.status_code == 200, first_page.text
+    assert first_page.json()["total"] == 2
+    assert first_page.json()["reports"][0]["report"]["actor_name"] == "Inbox agent"
+    second_page = client.get("/api/inbox", headers=team_member_headers, params={"limit": 1, "offset": 1})
+    assert second_page.status_code == 200, second_page.text
+    assert second_page.json()["tasks"][0]["id"] == task["id"]
+
+    review = client.put(
+        f"/api/reports/{report_id}/review", headers=team_member_headers,
+        json={"score": 4, "verdict": "approved"},
+    )
+    assert review.status_code == 200, review.text
+    reviewed_inbox = client.get("/api/inbox", headers=team_member_headers)
+    assert reviewed_inbox.json()["total"] == 1
+    assert reviewed_inbox.json()["reports"] == []
+
+    owner_inbox = client.get("/api/inbox", headers=owner_headers)
+    assert owner_inbox.status_code == 200, owner_inbox.text
+    assert owner_inbox.json()["total"] == 0
+
+
+def test_task_update_and_activity_commit_atomically(client: TestClient):
+    from sqlalchemy import text
+
+    task = client.post("/api/tasks", headers=user_headers(), json={"title": "Atomic task"}).json()["task"]
+    with app.state.test_session_factory() as db:
+        db.execute(text("CREATE TRIGGER reject_task_update_activity BEFORE INSERT ON activities "
+                        "WHEN NEW.event_type = 'task.updated' BEGIN SELECT RAISE(ABORT, 'reject activity'); END"))
+        db.commit()
+    try:
+        with TestClient(app, raise_server_exceptions=False) as failing_client:
+            failed = failing_client.patch(
+                f"/api/tasks/{task['id']}", headers=user_headers(),
+                json={"title": "Must roll back", "expected_version": task["version"]},
+            )
+            assert failed.status_code == 500
+    finally:
+        with app.state.test_session_factory() as db:
+            db.execute(text("DROP TRIGGER reject_task_update_activity"))
+            db.commit()
+    current = client.get(f"/api/tasks/{task['id']}", headers=user_headers()).json()["task"]
+    assert current == task
+    assert client.get("/api/activity", headers=user_headers(), params={"task_id": task["id"]}).json()["total"] == 1
 
 
 def test_task_search_pagination_and_overview_use_the_full_workspace(client: TestClient):
@@ -207,7 +454,7 @@ def test_task_lifecycle_agent_keys_and_report_provenance(client: TestClient):
     updated = client.patch(
         "/api/tasks/" + task_id,
         headers=agent_headers(first_secret),
-        json={"status": "done"},
+        json={"status": "done", "expected_version": task["version"]},
     )
     assert updated.status_code == 200
     assert updated.json()["task"]["status"] == "done"
@@ -350,7 +597,9 @@ def test_validation(client: TestClient):
     assert client.post("/api/tasks", headers=user_headers(), json={"title": "ok", "source": "agent"}).status_code == 422
     created = client.post("/api/tasks", headers=user_headers(), json={"title": "valid"})
     task_id = created.json()["task"]["id"]
-    assert client.patch("/api/tasks/" + task_id, headers=user_headers(), json={}).status_code == 422
+    assert client.patch(
+        "/api/tasks/" + task_id, headers=user_headers(), json={"expected_version": 1}
+    ).status_code == 422
     assert client.post(
         "/api/tasks/" + task_id + "/reports",
         headers=user_headers(),
@@ -382,7 +631,7 @@ def test_task_and_report_changes_create_scoped_activity_events(client: TestClien
     unchanged = client.patch(
         f"/api/tasks/{task_id}",
         headers=user_headers(),
-        json={"title": task["title"], "status": task["status"]},
+        json={"title": task["title"], "status": task["status"], "expected_version": task["version"]},
     )
     assert unchanged.status_code == 200
     assert unchanged.json()["task"]["updated_at"] == task["updated_at"]
@@ -391,9 +640,10 @@ def test_task_and_report_changes_create_scoped_activity_events(client: TestClien
     changed = client.patch(
         f"/api/tasks/{task_id}",
         headers=user_headers(),
-        json={"title": "Updated activity task", "status": "in_progress"},
+        json={"title": "Updated activity task", "status": "in_progress", "expected_version": unchanged.json()["task"]["version"]},
     )
     assert changed.status_code == 200
+    assert changed.json()["task"]["version"] == task["version"] + 1
     changed_event = client.get("/api/activity", headers=user_headers(), params={"task_id": task_id}).json()[
         "activities"
     ][0]
@@ -541,7 +791,7 @@ def test_archiving_keeps_a_read_only_task_and_complete_report_snapshot(client: T
     assert client.get(f"/api/tasks/{task_id}", headers=user_headers()).status_code == 404
     assert client.get(f"/api/tasks/{task_id}/reports", headers=user_headers()).status_code == 404
     assert client.patch(
-        f"/api/tasks/{task_id}", headers=user_headers(), json={"status": "done"}
+        f"/api/tasks/{task_id}", headers=user_headers(), json={"status": "done", "expected_version": original["version"]}
     ).status_code == 404
     assert client.post(
         f"/api/tasks/{task_id}/reports", headers=user_headers(), json={"content": "too late"}

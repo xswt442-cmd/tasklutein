@@ -25,8 +25,11 @@ from .routers.history import router as history_router
 from .routers.overview import router as overview_router
 from .routers.report_comments import router as report_comment_router
 from .routers.reports import router as report_router
+from .routers.reviews import inbox_router
+from .routers.reviews import router as report_review_router
 from .routers.session import router as session_router
 from .routers.tasks import router as task_router
+from .routers.workspaces import router as workspace_router
 
 app = FastAPI(
     title="Tasklutein API",
@@ -49,7 +52,7 @@ app.add_middleware(
     allow_origins=origins,
     allow_credentials=False,
     allow_methods=["GET", "POST", "PATCH", "DELETE"],
-    allow_headers=["Authorization", "Content-Type"],
+    allow_headers=["Authorization", "Content-Type", "X-Tasklutein-Workspace-ID"],
 )
 
 
@@ -67,12 +70,13 @@ def error_code(detail: object) -> str:
 @app.exception_handler(HTTPException)
 async def handle_http_error(request: Request, exc: HTTPException):
     request_id = request_id_for(request)
+    payload = {"detail": exc.detail, "code": error_code(exc.detail), "request_id": request_id}
+    if isinstance(exc.detail, dict) and exc.detail.get("code") == "task_version_conflict":
+        payload["detail"] = "task_version_conflict"
+        payload["code"] = "task_version_conflict"
+        payload["latest_task"] = exc.detail.get("latest_task")
     return JSONResponse(
-        {
-            "detail": exc.detail,
-            "code": error_code(exc.detail),
-            "request_id": request_id,
-        },
+        payload,
         status_code=exc.status_code,
         headers=exc.headers,
     )
@@ -212,10 +216,13 @@ def ready(
 
 
 app.include_router(session_router)
+app.include_router(workspace_router)
 app.include_router(agent_token_router)
 app.include_router(activity_router)
 app.include_router(history_router)
 app.include_router(task_router)
 app.include_router(report_router)
 app.include_router(report_comment_router)
+app.include_router(report_review_router)
+app.include_router(inbox_router)
 app.include_router(overview_router)

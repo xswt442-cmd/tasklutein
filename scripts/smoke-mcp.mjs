@@ -19,7 +19,7 @@ try {
   const actual = listed.tools.map((tool) => tool.name).sort();
   const expected = [
     "add_report", "add_report_comment", "create_task", "get_task", "list_report_comments",
-    "list_reports", "list_tasks", "update_task",
+    "list_report_reviews", "list_reports", "list_tasks", "update_task",
   ];
   if (JSON.stringify(actual) !== JSON.stringify(expected)) {
     throw new Error("Unexpected MCP tools: " + actual.join(", "));

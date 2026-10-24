@@ -16,6 +16,8 @@ const gatewaySecret = randomBytes(32).toString("hex");
 const accessIssuer = "https://access.example.test";
 const accessSubject = "mcp-integration-" + randomUUID();
 const accessEmail = accessSubject + "@example.test";
+const teammateSubject = "mcp-teammate-" + randomUUID();
+const teammateEmail = teammateSubject + "@example.test";
 const accessOrigin = "http://localhost:5173";
 
 let apiProcess: ChildProcess | undefined;
@@ -26,14 +28,19 @@ function gatewayHeaders(): Record<string, string> {
   return { "X-Tasklutein-Gateway": gatewaySecret };
 }
 
-function userHeaders(): Record<string, string> {
+function userHeadersFor(subject: string, email: string, workspaceId?: string): Record<string, string> {
   return {
     ...gatewayHeaders(),
     "X-Tasklutein-Access-Issuer": accessIssuer,
-    "X-Tasklutein-Access-Subject": accessSubject,
-    "X-Tasklutein-Access-Email": accessEmail,
+    "X-Tasklutein-Access-Subject": subject,
+    "X-Tasklutein-Access-Email": email,
+    ...(workspaceId ? { "X-Tasklutein-Workspace-ID": workspaceId } : {}),
     Origin: accessOrigin,
   };
+}
+
+function userHeaders(): Record<string, string> {
+  return userHeadersFor(accessSubject, accessEmail);
 }
 
 function run(command: string, args: string[], cwd: string, env?: NodeJS.ProcessEnv): Promise<string> {
@@ -160,7 +167,7 @@ afterAll(async () => {
 });
 
 describe("Tasklutein HTTP MCP with a real local FastAPI process", () => {
-  it("isolates personal keys, runs all eight tools, and rejects deleted keys", async () => {
+  it("isolates workspace keys, runs all nine tools, and rejects deleted keys", async () => {
     await mkdir(scratchDirectory, { recursive: true });
     databasePath = join(scratchDirectory, "mcp-integration-" + randomUUID() + ".sqlite");
     const databaseUrl = "sqlite:///" + databasePath.replaceAll("\\", "/");
@@ -187,6 +194,31 @@ describe("Tasklutein HTTP MCP with a real local FastAPI process", () => {
       headers: userHeaders(),
     });
     expect(bootstrap.status).toBe(200);
+    const teammateBootstrap = await callApi(apiBase, "/api/session/bootstrap", {
+      method: "POST",
+      headers: userHeadersFor(teammateSubject, teammateEmail),
+    });
+    expect(teammateBootstrap.status).toBe(200);
+    const teammateUserId = (await teammateBootstrap.json() as { user: { id: string } }).user.id;
+
+    const teamResponse = await callApi(apiBase, "/api/workspaces", {
+      method: "POST",
+      headers: { ...userHeaders(), "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "MCP team integration" }),
+    });
+    expect(teamResponse.status).toBe(201);
+    const teamId = (await teamResponse.json() as { workspace: { id: string } }).workspace.id;
+    const inviteResponse = await callApi(apiBase, `/api/workspaces/${teamId}/invitations`, {
+      method: "POST",
+      headers: { ...userHeaders(), "Content-Type": "application/json" },
+      body: JSON.stringify({ email: teammateEmail }),
+    });
+    expect(inviteResponse.status).toBe(201);
+    const invitationId = (await inviteResponse.json() as { invitation: { id: string } }).invitation.id;
+    const acceptResponse = await callApi(apiBase, `/api/invitations/${invitationId}/accept`, {
+      method: "POST", headers: userHeadersFor(teammateSubject, teammateEmail),
+    });
+    expect(acceptResponse.status).toBe(200);
 
     const firstKeyResponse = await callApi(apiBase, "/api/agent-tokens", {
       method: "POST",
@@ -203,6 +235,21 @@ describe("Tasklutein HTTP MCP with a real local FastAPI process", () => {
     const firstKey = await firstKeyResponse.json() as { token: { id: string }; secret: string };
     const secondKey = await secondKeyResponse.json() as { token: { id: string }; secret: string };
     expect(firstKey.secret).not.toBe(secondKey.secret);
+
+    const ownerTeamKeyResponse = await callApi(apiBase, "/api/agent-tokens", {
+      method: "POST",
+      headers: { ...userHeadersFor(accessSubject, accessEmail, teamId), "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "MCP team owner key" }),
+    });
+    const teammateTeamKeyResponse = await callApi(apiBase, "/api/agent-tokens", {
+      method: "POST",
+      headers: { ...userHeadersFor(teammateSubject, teammateEmail, teamId), "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "MCP team member key" }),
+    });
+    expect(ownerTeamKeyResponse.status).toBe(201);
+    expect(teammateTeamKeyResponse.status).toBe(201);
+    const ownerTeamKey = await ownerTeamKeyResponse.json() as { token: { id: string }; secret: string };
+    const teammateTeamKey = await teammateTeamKeyResponse.json() as { token: { id: string }; secret: string };
 
     mcpServer = createHttpMcpServer({ apiBase, gatewayToken: gatewaySecret });
     await new Promise<void>((resolveListen) => mcpServer!.listen(0, "127.0.0.1", resolveListen));
@@ -225,12 +272,19 @@ describe("Tasklutein HTTP MCP with a real local FastAPI process", () => {
     });
     expect(invalidKey.status).toBe(401);
 
-    const client = await connectMcp(mcpUrl, firstKey.secret);
+    const client = await connectMcp(mcpUrl, ownerTeamKey.secret);
     try {
-      expect((await client.listTools()).tools.map((tool) => tool.name).sort()).toEqual([
+      const tools = (await client.listTools()).tools;
+      expect(tools.map((tool) => tool.name).sort()).toEqual([
         "add_report", "add_report_comment", "create_task", "get_task", "list_report_comments",
-        "list_reports", "list_tasks", "update_task",
+        "list_report_reviews", "list_reports", "list_tasks", "update_task",
       ]);
+      const updateTaskSchema = tools.find((tool) => tool.name === "update_task")?.inputSchema as {
+        properties?: Record<string, unknown>;
+      };
+      expect(updateTaskSchema.properties?.expected_version).toBeDefined();
+      expect(updateTaskSchema.properties?.assignee_user_id).toBeDefined();
+      expect(updateTaskSchema.properties?.workspace_id).toBeUndefined();
 
       const created = await client.callTool({
         name: "create_task", arguments: { title: "MCP integration check", description: "Created through real FastAPI." },
@@ -240,8 +294,51 @@ describe("Tasklutein HTTP MCP with a real local FastAPI process", () => {
       expect(taskId).toMatch(/^[0-9a-f-]{36}$/i);
       if (!taskId) throw new Error("create_task returned no task id");
 
-      const updated = await client.callTool({ name: "update_task", arguments: { id: taskId, status: "in_progress" } });
+      const initialTask = await client.callTool({ name: "get_task", arguments: { id: taskId } });
+      const initialTaskValue = JSON.parse(firstTextContent(initialTask)) as {
+        task?: { task?: { version?: number } };
+      };
+      const expectedVersion = initialTaskValue.task?.task?.version;
+      expect(expectedVersion).toBe(1);
+      if (expectedVersion === undefined) throw new Error("get_task did not return a task version");
+      const missingVersion = await client.callTool({
+        name: "update_task", arguments: { id: taskId, status: "in_progress" },
+      });
+      expect(missingVersion.isError).toBe(true);
+
+      const updated = await client.callTool({
+        name: "update_task", arguments: {
+          id: taskId,
+          expected_version: expectedVersion,
+          assignee_user_id: teammateUserId,
+          status: "in_progress",
+        },
+      });
       expect(firstTextContent(updated)).toContain(taskId);
+      expect(firstTextContent(updated)).toContain(teammateUserId);
+      const staleUpdate = await client.callTool({
+        name: "update_task", arguments: { id: taskId, expected_version: expectedVersion, title: "Stale overwrite" },
+      });
+      expect(staleUpdate.isError).toBe(true);
+      expect(firstTextContent(staleUpdate)).toContain("409");
+      expect(firstTextContent(staleUpdate)).toContain('"code":"task_version_conflict"');
+      expect(firstTextContent(staleUpdate)).toContain('"latest_task"');
+      const clearedAssignee = await client.callTool({
+        name: "update_task", arguments: { id: taskId, expected_version: expectedVersion + 1, assignee_user_id: null },
+      });
+      expect(clearedAssignee.isError).not.toBe(true);
+      expect(JSON.parse(firstTextContent(clearedAssignee))).toMatchObject({
+        task: { assignee_user_id: null, version: expectedVersion + 2 },
+      });
+      const nonMemberAssignment = await client.callTool({
+        name: "update_task", arguments: {
+          id: taskId,
+          expected_version: expectedVersion + 2,
+          assignee_user_id: randomUUID(),
+        },
+      });
+      expect(nonMemberAssignment.isError).toBe(true);
+      expect(firstTextContent(nonMemberAssignment)).toContain("404");
 
       const report = await client.callTool({
         name: "add_report", arguments: { task_id: taskId, content: "Verified through real FastAPI." },
@@ -251,6 +348,16 @@ describe("Tasklutein HTTP MCP with a real local FastAPI process", () => {
       const reportId = reportValue.report?.id;
       expect(reportId).toMatch(/^[0-9a-f-]{36}$/i);
       if (!reportId) throw new Error("add_report returned no report id");
+
+      const reviewResponse = await callApi(apiBase, `/api/reports/${reportId}/review`, {
+        method: "PUT",
+        headers: { ...userHeadersFor(accessSubject, accessEmail, teamId), "Content-Type": "application/json" },
+        body: JSON.stringify({ score: 5, verdict: "approved", note: "Verified by the integration test." }),
+      });
+      expect(reviewResponse.status).toBe(200);
+      const reviews = await client.callTool({ name: "list_report_reviews", arguments: { report_id: reportId } });
+      expect(reviews.isError).not.toBe(true);
+      expect(firstTextContent(reviews)).toContain("Verified by the integration test.");
 
       const firstComment = await client.callTool({
         name: "add_report_comment", arguments: { report_id: reportId, content: "Checked the reported result." },
@@ -262,7 +369,7 @@ describe("Tasklutein HTTP MCP with a real local FastAPI process", () => {
         report_id: reportId,
         content: "Checked the reported result.",
         source: "agent",
-        actor_name: "MCP integration key one",
+        actor_name: "MCP team owner key",
       });
       expect(firstCommentValue.comment?.id).toMatch(/^[0-9a-f-]{36}$/i);
       expect(firstCommentValue.comment?.created_at).toBeTruthy();
@@ -291,17 +398,18 @@ describe("Tasklutein HTTP MCP with a real local FastAPI process", () => {
 
       const detail = await client.callTool({ name: "get_task", arguments: { id: taskId } });
       const detailValue = JSON.parse(firstTextContent(detail)) as {
-        task?: { task?: { id?: string } };
+        task?: { task?: { id?: string; version?: number } };
         reports?: { reports?: Array<{ content?: string }> };
       };
       expect(detailValue.task?.task?.id).toBe(taskId);
+      expect(detailValue.task?.task?.version).toBe(3);
       expect(detailValue.reports?.reports).toEqual(
         expect.arrayContaining([expect.objectContaining({ content: "Verified through real FastAPI." })]),
       );
 
       const tasks = await client.callTool({ name: "list_tasks", arguments: { q: "MCP integration check", limit: 10, offset: 0 } });
       expect(JSON.parse(firstTextContent(tasks))).toMatchObject({
-        tasks: expect.arrayContaining([expect.objectContaining({ id: taskId })]),
+        tasks: expect.arrayContaining([expect.objectContaining({ id: taskId, version: 3 })]),
       });
 
       const reports = await client.callTool({ name: "list_reports", arguments: { task_id: taskId, limit: 10, offset: 0 } });
@@ -319,7 +427,7 @@ describe("Tasklutein HTTP MCP with a real local FastAPI process", () => {
       expect(revokedIdentity.status).toBe(401);
       await expect(connectMcp(mcpUrl, firstKey.secret)).rejects.toThrow();
 
-      const otherClient = await connectMcp(mcpUrl, secondKey.secret);
+      const otherClient = await connectMcp(mcpUrl, teammateTeamKey.secret);
       try {
         const otherKeyComments = await otherClient.callTool({
           name: "list_report_comments", arguments: { report_id: reportId, limit: 10, offset: 0 },

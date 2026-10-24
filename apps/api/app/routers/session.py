@@ -9,12 +9,12 @@ from ..auth import (
     require_user_principal,
 )
 from ..database import get_db
-from ..models import User, Workspace
+from ..models import User, Workspace, WorkspaceMember
 
 router = APIRouter(prefix="/api", tags=["session"])
 
 
-def session_view(user: User, workspace: Workspace) -> dict[str, object]:
+def session_view(user: User, workspace: Workspace, role: str = "owner") -> dict[str, object]:
     return {
         "user": {
             "id": str(user.id),
@@ -24,6 +24,8 @@ def session_view(user: User, workspace: Workspace) -> dict[str, object]:
         "workspace": {
             "id": str(workspace.id),
             "name": workspace.name,
+            "kind": workspace.kind,
+            "role": role,
             "created_at": workspace.created_at,
         },
     }
@@ -35,7 +37,8 @@ def bootstrap_session(
     db: Session = Depends(get_db),
 ):
     user, workspace = provision_user_workspace(db, require_access_identity(request))
-    return session_view(user, workspace)
+    membership = db.get(WorkspaceMember, (workspace.id, user.id))
+    return session_view(user, workspace, membership.role if membership else "owner")
 
 
 @router.get("/me")
@@ -47,4 +50,4 @@ def get_current_user(
     workspace = db.get(Workspace, principal.workspace_id)
     if user is None or workspace is None:
         raise HTTPException(status_code=401, detail="session_bootstrap_required")
-    return session_view(user, workspace)
+    return session_view(user, workspace, principal.workspace_role)

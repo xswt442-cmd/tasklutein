@@ -28,9 +28,11 @@ let databasePath: string | undefined;
 let apiBase: string;
 let apiEnv: EdgeEnv;
 let jwks: ReturnType<typeof createLocalJWKSet>;
+let lastGatewayHeaders: Headers | undefined;
 const realFetch = globalThis.fetch.bind(globalThis);
 
 async function fetchLocalOrigin(request: Request, init?: RequestInit): Promise<Response> {
+  lastGatewayHeaders = new Headers(request.headers);
   // Give Node fetch a replayable body source for this local HTTP integration path.
   const body = request.body ? await request.arrayBuffer() : undefined;
   const headers = new Headers(request.headers);
@@ -311,6 +313,7 @@ describe("Cloudflare Worker with real local FastAPI and MCP services", () => {
 
     const meA = await workerFetch(webHost, "/api/me", {
       headers: await accessHeaders(userA, {
+        "X-Tasklutein-Access-Issuer": "https://attacker.integration.test",
         "X-Tasklutein-Access-Subject": userB.subject,
         "X-Tasklutein-Access-Email": userB.email,
         Authorization: "Bearer " + keyResult.secret,
@@ -321,6 +324,9 @@ describe("Cloudflare Worker with real local FastAPI and MCP services", () => {
       id: provisionedA.user.id,
       email: userA.email,
     });
+    expect(lastGatewayHeaders?.get("X-Tasklutein-Access-Issuer")).toBe(accessIssuer);
+    expect(lastGatewayHeaders?.get("X-Tasklutein-Access-Subject")).toBe(userA.subject);
+    expect(lastGatewayHeaders?.get("X-Tasklutein-Access-Email")).toBe(userA.email);
 
     const createdTask = await workerFetch(webHost, "/api/tasks", {
       method: "POST",
@@ -336,6 +342,17 @@ describe("Cloudflare Worker with real local FastAPI and MCP services", () => {
       }),
     });
     expect(crossUserTask.status).toBe(404);
+
+    const unauthorizedWorkspace = await workerFetch(webHost, "/api/me", {
+      headers: await accessHeaders(userA, {
+        "X-Tasklutein-Workspace-ID": provisionedB.workspace.id,
+        "X-Untrusted-Header": "must-be-dropped",
+      }),
+    });
+    expect(unauthorizedWorkspace.status).toBe(404);
+    expect(lastGatewayHeaders?.get("X-Tasklutein-Workspace-ID")).toBe(provisionedB.workspace.id);
+    expect(lastGatewayHeaders?.has("X-Untrusted-Header")).toBe(false);
+    expect(lastGatewayHeaders?.get("X-Tasklutein-Access-Subject")).toBe(userA.subject);
 
     const webToMcp = await workerFetch(webHost, "/mcp", {
       method: "POST",
@@ -377,6 +394,8 @@ describe("Cloudflare Worker with real local FastAPI and MCP services", () => {
       method: "POST",
       headers: {
         Authorization: "Bearer " + keyResult.secret,
+        "X-Tasklutein-Workspace-ID": provisionedA.workspace.id,
+        "X-Untrusted-Header": "must-be-dropped",
         "Content-Type": "application/json",
         Accept: "application/json, text/event-stream",
         "MCP-Protocol-Version": "2025-11-25",
@@ -387,6 +406,8 @@ describe("Cloudflare Worker with real local FastAPI and MCP services", () => {
       }),
     });
     expect(toolCall.status).toBe(200);
+    expect(lastGatewayHeaders?.has("X-Tasklutein-Workspace-ID")).toBe(false);
+    expect(lastGatewayHeaders?.has("X-Untrusted-Header")).toBe(false);
     const toolResult = await toolCall.json() as { result: { content: Array<{ type: string; text?: string }> } };
     const textContent = toolResult.result.content.find((item) => item.type === "text")?.text;
     expect(textContent).toBeTruthy();

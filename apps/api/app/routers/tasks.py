@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from ..activity import record_activity
 from ..auth import Principal, require_principal, require_user_principal
 from ..database import get_db
-from ..models import Task, utc_now
+from ..models import Task, WorkspaceMember, utc_now
 from ..schemas import TaskCreate, TaskList, TaskSort, TaskStatus, TaskUpdate, TaskView
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
@@ -36,6 +36,7 @@ def list_tasks(
     status: TaskStatus | None = None,
     q: str | None = Query(default=None, max_length=200),
     sort: TaskSort = "updated_desc",
+    assignee: str | None = Query(default=None, max_length=36),
     limit: int | None = Query(default=None, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
@@ -44,6 +45,18 @@ def list_tasks(
     filters = [Task.workspace_id == principal.workspace_id, Task.archived_at.is_(None)]
     if status is not None:
         filters.append(Task.status == status)
+    if assignee == "me":
+        filters.append(Task.assignee_user_id == principal.user_id)
+    elif assignee == "unassigned":
+        filters.append(Task.assignee_user_id.is_(None))
+    elif assignee is not None:
+        try:
+            assignee_id = UUID(assignee)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="invalid_assignee_filter") from exc
+        if db.get(WorkspaceMember, (principal.workspace_id, assignee_id)) is None:
+            raise HTTPException(status_code=404, detail="workspace_member_not_found")
+        filters.append(Task.assignee_user_id == assignee_id)
     if q and q.strip():
         search = q.strip()
         filters.append(
@@ -104,8 +117,21 @@ def update_task(
 ):
     task = find_task(db, task_id, principal.workspace_id, lock=True)
     requested = payload.model_dump(exclude_unset=True)
+    expected_version = requested.pop("expected_version", None)
+    if expected_version is None:
+        raise HTTPException(status_code=428, detail="expected_version_required")
+    if expected_version != task.version:
+        latest_task = TaskView.model_validate(task).model_dump(mode="json")
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "task_version_conflict", "latest_task": latest_task},
+        )
+    if "assignee_user_id" in requested and requested["assignee_user_id"] is not None:
+        assignee = db.get(WorkspaceMember, (principal.workspace_id, requested["assignee_user_id"]))
+        if assignee is None:
+            raise HTTPException(status_code=404, detail="workspace_member_not_found")
     changed_fields = [
-        field for field in ("title", "description", "status")
+        field for field in ("title", "description", "status", "assignee_user_id")
         if field in requested and getattr(task, field) != requested[field]
     ]
     if not changed_fields:
@@ -115,6 +141,7 @@ def update_task(
     for field in changed_fields:
         setattr(task, field, requested[field])
     task.updated_at = datetime.now(UTC)
+    task.version += 1
     if task.status != status_before:
         event_type = "task.status_changed"
         summary = {

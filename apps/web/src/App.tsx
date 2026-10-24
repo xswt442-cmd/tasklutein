@@ -1,16 +1,19 @@
 import { QueryClient, QueryClientProvider, useIsFetching, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Archive, CheckCircle2, Circle, LayoutDashboard, ListTodo, LogOut, RefreshCw, Settings } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { Archive, CheckCircle2, Circle, LayoutDashboard, ListTodo, LogOut, RefreshCw, Settings, Users, Inbox as InboxIcon } from "lucide-react";
+import { useContext, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { BrowserRouter, NavLink, Outlet, Route, Routes } from "react-router";
-import { api, probeSession } from "./api";
-import type { Overview, Session } from "./api";
+import { api, probeSession, setApiWorkspaceId } from "./api";
+import type { Overview, Session, Workspace, WorkspaceList } from "./api";
 import { ApiFeedback } from "./components/ApiFeedback";
 import { HistoryPage } from "./pages/HistoryPage";
 import { OverviewPage } from "./pages/OverviewPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { TaskDetailPage } from "./pages/TaskDetailPage";
 import { TasksPage } from "./pages/TasksPage";
+import { InboxPage } from "./pages/InboxPage";
+import { TeamPage } from "./pages/TeamPage";
+import { WorkspaceContext } from "./workspace";
 
 export default function App() {
   const [queryClient] = useState(() => new QueryClient({
@@ -30,12 +33,18 @@ function Workspace() {
   useEffect(() => {
     const userId = bootstrap.data?.user.id;
     if (!userId) return;
-    if (previousUser.current && previousUser.current !== userId) client.clear();
+    if (previousUser.current && previousUser.current !== userId) {
+      client.clear();
+      setApiWorkspaceId(null);
+    } else if (!previousUser.current) {
+      setApiWorkspaceId(null);
+    }
     previousUser.current = userId;
   }, [bootstrap.data?.user.id, client]);
 
   function signOut() {
     client.clear();
+    setApiWorkspaceId(null);
     previousUser.current = null;
     window.location.assign("/cdn-cgi/access/logout");
   }
@@ -75,18 +84,37 @@ function GuestPreview({ error, onRetry }: { error?: Error; onRetry?: () => void 
 }
 
 function WorkspaceRoutes({ session, signOut }: { session: Session; signOut: () => void }) {
-  return <Routes><Route element={<WorkspaceLayout session={session} signOut={signOut} />}>
+  const client = useQueryClient();
+  const workspaceList = useQuery({ queryKey: ["workspaces"], queryFn: () => api<WorkspaceList>("/workspaces") });
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const workspaces = workspaceList.data?.workspaces ?? [];
+  const currentId = selectedId ?? workspaceList.data?.current_workspace_id ?? session.workspace.id;
+  const current = workspaces.find((workspace) => workspace.id === currentId) ?? workspaces.find((workspace) => workspace.id === session.workspace.id) ?? { ...session.workspace, kind: "personal" as const, role: "owner" as const };
+  useEffect(() => { if (workspaceList.data && !selectedId) setApiWorkspaceId(workspaceList.data.current_workspace_id); }, [workspaceList.data, selectedId]);
+  function selectWorkspace(id: string) {
+    if (id === currentId) return;
+    setApiWorkspaceId(id);
+    client.removeQueries({ predicate: (query) => !["session", "workspaces"].includes(String(query.queryKey[0])) });
+    setSelectedId(id);
+  }
+  return <WorkspaceContext.Provider value={{ workspace: current, workspaces, selectWorkspace }}>
+    {workspaceList.isError && <div className="mx-auto max-w-[1440px] px-4 pt-4 sm:px-6 lg:px-8"><ApiFeedback error={workspaceList.error} onRetry={() => void workspaceList.refetch()} /></div>}
+    <Routes><Route element={<WorkspaceLayout key={current.id} session={session} signOut={signOut} />}>
     <Route index element={<OverviewPage />} />
     <Route path="tasks" element={<TasksPage />} />
     <Route path="tasks/:taskId" element={<TaskDetailPage />} />
+    <Route path="inbox" element={<InboxPage />} />
+    <Route path="team" element={<TeamPage />} />
     <Route path="history" element={<HistoryPage />} />
     <Route path="history/tasks/:taskId" element={<HistoryPage />} />
     <Route path="settings" element={<SettingsPage session={session} />} />
     <Route path="*" element={<section className="card text-center"><p className="eyebrow">404</p><h2 className="mt-2 text-xl font-semibold">页面不存在</h2><NavLink to="/" className="primary-btn mt-5 inline-flex">返回工作台</NavLink></section>} />
-  </Route></Routes>;
+    </Route></Routes>
+  </WorkspaceContext.Provider>;
 }
 
 function WorkspaceLayout({ session, signOut }: { session: Session; signOut: () => void }) {
+  const { workspace, workspaces, selectWorkspace } = useContext(WorkspaceContext)!;
   const client = useQueryClient();
   const fetching = useIsFetching() > 0;
   const overview = useQuery({ queryKey: ["overview"], queryFn: () => api<Overview>("/overview") });
@@ -95,18 +123,19 @@ function WorkspaceLayout({ session, signOut }: { session: Session; signOut: () =
     <header className="sticky top-0 z-10 border-b border-[#e2e8dd] bg-white"><div className="mx-auto flex max-w-[1440px] flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6 lg:px-8">
       <div className="flex items-center gap-3"><img src="/mark.svg" width="38" height="38" alt="" /><div><p className="font-bold tracking-tight">Tasklutein</p><p className="text-xs text-[#657369]">任务与工作汇报</p></div></div>
       <div className="flex flex-wrap items-center gap-3"><span className="text-xs text-[#53675a]">{session.user.email}</span>
+        <label className="sr-only" htmlFor="workspace-select">切换工作区</label><select id="workspace-select" aria-label="切换工作区" className="input w-auto max-w-44 py-2" value={workspace.id} disabled={workspaces.length < 2} onChange={(event) => selectWorkspace(event.target.value)}>{workspaces.length === 0 && <option value={workspace.id}>{workspace.name}</option>}{workspaces.map((item) => <option key={item.id} value={item.id}>{item.name}{item.kind === "team" ? " · 团队" : " · 个人"}</option>)}</select>
         <span role="status" aria-live="polite" className={`hidden items-center gap-2 text-xs sm:inline-flex ${overview.isError ? "text-red-700" : "text-[#5b7360]"}`}>
           {overview.isError ? <Circle size={13} /> : fetching ? <RefreshCw size={13} /> : <CheckCircle2 size={13} />}{status}
         </span>
         <button type="button" className="secondary-btn" aria-label="刷新数据" onClick={() => void client.invalidateQueries()} disabled={fetching}><RefreshCw size={15} /><span className="hidden sm:inline">刷新</span></button>
         <button type="button" className="secondary-btn" onClick={signOut}><LogOut size={15} /><span>退出</span></button>
       </div>
-      <nav aria-label="主导航" className="flex w-full gap-2 overflow-x-auto pb-0.5 lg:hidden"><NavItem to="/" end><LayoutDashboard size={15} />Overview</NavItem><NavItem to="/tasks"><ListTodo size={15} />任务</NavItem><NavItem to="/history"><Archive size={15} />历史</NavItem><NavItem to="/settings"><Settings size={15} />设置</NavItem></nav>
+      <nav aria-label="主导航" className="flex w-full gap-2 overflow-x-auto pb-0.5 lg:hidden"><NavItem to="/" end><LayoutDashboard size={15} />Overview</NavItem><NavItem to="/tasks"><ListTodo size={15} />任务</NavItem><NavItem to="/inbox"><InboxIcon size={15} />待我处理</NavItem><NavItem to="/team"><Users size={15} />团队</NavItem><NavItem to="/history"><Archive size={15} />历史</NavItem><NavItem to="/settings"><Settings size={15} />设置</NavItem></nav>
     </div></header>
     <div className="mx-auto grid max-w-[1440px] gap-5 px-4 py-5 sm:px-6 lg:grid-cols-[220px_minmax(0,1fr)] lg:px-8 lg:py-8">
       <aside className="hidden lg:block"><div className="sticky top-28 rounded-2xl border border-[#e2e8dd] bg-white p-3"><p className="px-3 pb-2 pt-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-[#768279]">工作区</p>
-        <nav aria-label="侧边导航" className="space-y-1"><NavItem to="/" end><LayoutDashboard size={17} />Overview</NavItem><NavItem to="/tasks"><ListTodo size={17} />任务</NavItem><NavItem to="/history"><Archive size={17} />历史</NavItem><NavItem to="/settings"><Settings size={17} />设置</NavItem></nav>
-        <div className="mt-5 border-t border-[#edf1ea] px-3 pt-4 text-xs leading-5 text-[#718076]"><span className="block font-medium text-[#53675a]">私人工作区</span>{session.workspace.name}</div>
+        <nav aria-label="侧边导航" className="space-y-1"><NavItem to="/" end><LayoutDashboard size={17} />Overview</NavItem><NavItem to="/tasks"><ListTodo size={17} />任务</NavItem><NavItem to="/inbox"><InboxIcon size={17} />待我处理</NavItem><NavItem to="/team"><Users size={17} />团队</NavItem><NavItem to="/history"><Archive size={17} />历史</NavItem><NavItem to="/settings"><Settings size={17} />设置</NavItem></nav>
+        <div className="mt-5 border-t border-[#edf1ea] px-3 pt-4 text-xs leading-5 text-[#718076]"><span className="block font-medium text-[#53675a]">{workspace.kind === "team" ? "团队工作区" : "私人工作区"}</span>{workspace.name}</div>
       </div></aside>
       <main className="min-w-0"><Outlet /><footer className="py-8 text-center text-xs text-[#718076]">Tasklutein · People and agents working together</footer></main>
     </div>
