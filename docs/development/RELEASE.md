@@ -42,7 +42,7 @@
 
 ## Cloudflare Worker 发布
 
-使用 `.github/workflows/deploy.yml` 的手动 Production 工作流（需配置受限 Cloudflare 凭据及 `production` Environment），或在明确授权的环境中运行 `npm run deploy:worker`。
+使用 `.github/workflows/deploy.yml` 的手动 Production 工作流，或在明确授权的环境中运行 `npm run deploy:worker`。工作流要求仓库级变量 `CLOUDFLARE_ACCOUNT_ID` 与 `production` Environment 级 Secret `CLOUDFLARE_API_TOKEN`（受限的 Cloudflare 凭据）；凭据缺失时工作流在部署前中止。
 
 - 配置独立的 Web 与 MCP hostname 路由到同一 Worker。Web hostname 配置 Cloudflare Access One-time PIN 和邀请邮箱 Allow 策略；MCP hostname 不配置浏览器 Access。
 - 为 Worker 设置 `WEB_HOST`、`MCP_HOST`、`ACCESS_TEAM_DOMAIN`、`ACCESS_AUD` 和 `ORIGIN_URL`；部署时保留 Dashboard 管理的变量及 Secret `ORIGIN_GATEWAY_TOKEN`。API 和 MCP 服务使用相同的 `EDGE_GATEWAY_TOKEN`。`wrangler.jsonc` 使用 `keep_vars`，部署命令带 `--keep-vars`。
