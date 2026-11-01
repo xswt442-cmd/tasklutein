@@ -9,12 +9,12 @@ This file records shipped features, fixes, compatibility changes, and upgrade re
 ### 简体中文
 
 **安全**
-- 将传递依赖 `body-parser`、`fast-uri` 和 `qs` 更新至已修复版本，修复压缩请求解析拒绝服务、URI scheme 编码歧义和逗号数组序列化异常。
+- 将 `body-parser`、`fast-uri` 和 `qs` 更新至已修复版本，修复压缩请求解析拒绝服务、URI scheme 编码歧义和逗号数组序列化异常；同步更新受影响的 Wrangler、Miniflare、Vitest 和 Undici 开发工具依赖。
 
 ### English
 
 **Security**
-- Update the transitive dependencies `body-parser`, `fast-uri`, and `qs` to patched versions, addressing compressed-request parsing DoS, URI scheme decoding ambiguity, and comma-array serialization exceptions.
+- Update `body-parser`, `fast-uri`, and `qs` to patched versions, addressing compressed-request parsing DoS, URI scheme decoding ambiguity, and comma-array serialization exceptions; update the affected Wrangler, Miniflare, Vitest, and Undici development-tool dependencies.
 
 ## [0.1.3] - 2026-10-25
 
