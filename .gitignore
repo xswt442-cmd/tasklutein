@@ -1,5 +1,4 @@
-# Local scratch / agent handoffs (same convention as DiggerTerm)
-/testplace/
+# Local scratch / agent handoffs
 
 # JavaScript / web artifacts
 node_modules/
@@ -52,5 +51,7 @@ desktop.ini
 .codex/
 .cursor/
 .workbuddy/
+.zcode/
+.qoder/
 .aider*
 *.local.md
