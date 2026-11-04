@@ -72,6 +72,6 @@ The Worker forwards HTTP requests and response streams to the origin. The remote
 - `apps/mcp/`: Node MCP stdio/HTTP adapters using the FastAPI REST API.
 - `apps/api/migrations/0001_init.sql`: base SQL bootstrap for a new PostgreSQL volume.
 - `deploy/`: Docker Compose, Caddy, and Tunnel configuration.
-- `scripts/` and `test/`: repository maintenance tools and cross-service integration tests.
+- `scripts/` and `tests/`: repository maintenance tools and cross-service integration tests.
 
 The API and MCP are separate services reached through the Worker; task business rules and database access remain in FastAPI.

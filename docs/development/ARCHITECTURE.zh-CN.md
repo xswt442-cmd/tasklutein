@@ -72,6 +72,6 @@ Worker 将 HTTP 请求和响应流转发到源站。远程 MCP host 与 Web host
 - `apps/mcp/`：调用 FastAPI REST API 的 Node MCP stdio/HTTP 适配器。
 - `apps/api/migrations/0001_init.sql`：新建 PostgreSQL 数据卷的基础 SQL 初始化脚本。
 - `deploy/`：Docker Compose、Caddy 和 Tunnel 配置。
-- `scripts/` 与 `test/`：仓库级维护工具与跨服务集成测试。
+- `scripts/` 与 `tests/`：仓库级维护工具与跨服务集成测试。
 
 API 与 MCP 是经 Worker 访问的独立服务；任务业务规则和数据库访问集中在 FastAPI。

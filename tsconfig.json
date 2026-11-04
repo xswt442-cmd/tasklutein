@@ -12,5 +12,5 @@
     "noEmit": true,
     "types": ["@cloudflare/workers-types", "node", "vite/client"]
   },
-  "include": ["worker-configuration.d.ts", "apps/web/**/*.ts", "apps/web/**/*.tsx", "apps/edge/**/*.ts", "apps/mcp/**/*.ts", "test/**/*.ts"]
+  "include": ["worker-configuration.d.ts", "apps/web/**/*.ts", "apps/web/**/*.tsx", "apps/edge/**/*.ts", "apps/mcp/**/*.ts", "tests/**/*.ts"]
 }

@@ -18,7 +18,7 @@ uv run --locked npm run check
 
 `uv run` 会为浏览器工作流测试提供项目的 Python 环境。当前部署用 Docker 镜像和 CI 仍通过 `apps/api/requirements*.txt` 安装依赖；修改 Python 依赖时需要同步维护其兼容版本约束。
 
-`npm run check` 包含 TypeScript、Vitest（页面通过真实 HTTP 调用 FastAPI，使用隔离 SQLite）、MCP stdio 握手、双语文档、Vite Assets 构建及 `wrangler deploy --dry-run`，**不执行云端部署**。`test/edge.test.ts` 测试 Worker 网关的鉴权与 Header；`test/mcp-http.test.ts` 使用真实 MCP HTTP Client 检查工具和分页。若修改工具契约，务必更新测试和文档。变动依赖要一并更新 package-lock。
+`npm run check` 包含 TypeScript、Vitest（页面通过真实 HTTP 调用 FastAPI，使用隔离 SQLite）、MCP stdio 握手、双语文档、Vite Assets 构建及 `wrangler deploy --dry-run`，**不执行云端部署**。`tests/edge.test.ts` 测试 Worker 网关的鉴权与 Header；`tests/mcp-http.test.ts` 使用真实 MCP HTTP Client 检查工具和分页。若修改工具契约，务必更新测试和文档。变动依赖要一并更新 package-lock。
 
 ## FastAPI 与数据库
 

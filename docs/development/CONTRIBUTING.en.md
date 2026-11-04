@@ -18,7 +18,7 @@ uv run --locked npm run check
 
 `uv run` makes the project's Python environment available to the browser workflow tests. The deployment Docker image and current CI pipeline continue to install `apps/api/requirements*.txt`; keep their compatible constraints in sync with `pyproject.toml` when changing Python dependencies.
 
-`npm run check` runs TypeScript, Vitest (including the UI against real FastAPI HTTP over isolated SQLite), stdio MCP handshake, bilingual docs, Vite Assets build, and `wrangler deploy --dry-run`; it **does not deploy cloud resources**. `test/edge.test.ts` covers gateway headers/auth; `test/mcp-http.test.ts` uses a real MCP HTTP client for tools and pagination. Update tests and docs alongside tool-contract changes. Commit lockfile changes with dependency updates.
+`npm run check` runs TypeScript, Vitest (including the UI against real FastAPI HTTP over isolated SQLite), stdio MCP handshake, bilingual docs, Vite Assets build, and `wrangler deploy --dry-run`; it **does not deploy cloud resources**. `tests/edge.test.ts` covers gateway headers/auth; `tests/mcp-http.test.ts` uses a real MCP HTTP client for tools and pagination. Update tests and docs alongside tool-contract changes. Commit lockfile changes with dependency updates.
 
 ## FastAPI and Database
 
