@@ -8,6 +8,7 @@
 - Cloudflare Worker 在 Access 保护的 Web hostname 提供 React 静态资源和 `/api/*`；独立 MCP hostname 只开放 `/mcp`。
 - FastAPI、PostgreSQL、MCP、Caddy 和 Tunnel 由腾讯云 Docker 环境承载。
 - 创建 Tag 或 GitHub Release 不更新 Worker、服务器、数据库或密钥。生产变更须获得单独授权。
+- Preview 后端由服务器上的 systemd timer 跟随 `dev` 自动发布；Production 后端仍只在获得授权后手工发布。
 
 ## 发布前检查
 

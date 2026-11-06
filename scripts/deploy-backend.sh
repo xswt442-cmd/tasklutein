@@ -18,6 +18,13 @@
 # the Tunnel have their own release steps; verify the public entrypoint
 # separately after this succeeds.
 #
+# The defaults target Production (`deploy` project, `deploy/.env`). A second
+# stack on the same host is deployed by naming its project and env file:
+#   bash scripts/deploy-backend.sh --project tasklutein-preview \
+#     --env-file deploy/.env.preview
+# Only the `deploy` project is backed up before migrating; the other projects
+# own separate volumes and are not covered by scripts/production-backup.sh.
+#
 # It assumes a schema already tracked by Alembic. A brand-new data volume is
 # initialised by apps/api/migrations/0001_init.sql, which needs the documented
 # one-time `alembic stamp 0001_baseline` before `upgrade head`; the script stops
@@ -27,10 +34,17 @@ umask 077
 
 usage() {
   cat <<'EOF'
-Usage: bash scripts/deploy-backend.sh [--allow-dirty]
+Usage: bash scripts/deploy-backend.sh [--project NAME] [--env-file PATH]
+                                     [--compose-file PATH] [--allow-dirty]
 
-  --allow-dirty  Deploy a checkout with uncommitted changes. Without it the
-                 script refuses so a deployment always matches a commit.
+  --project NAME       Compose project to deploy (default: deploy, Production).
+                       Only `deploy` is snapshotted with production-backup.sh.
+  --env-file PATH      Compose env file; relative paths start at the repository
+                       root (default: deploy/.env).
+  --compose-file PATH  Compose file; relative paths start at the repository
+                       root (default: deploy/compose.yml).
+  --allow-dirty        Deploy a checkout with uncommitted changes. Without it
+                       the script refuses so a deployment matches a commit.
 
 Exit codes: 0 deployed, 2 usage, 3 preflight, 4 backup, 5 build,
             6 migration, 7 containers, 8 health check.
@@ -38,9 +52,22 @@ EOF
 }
 
 allow_dirty=0
-for arg in "$@"; do
-  case "$arg" in
-    --allow-dirty) allow_dirty=1 ;;
+compose_project=deploy
+env_file_arg=deploy/.env
+compose_file_arg=deploy/compose.yml
+while (( $# > 0 )); do
+  case "$1" in
+    --allow-dirty) allow_dirty=1; shift ;;
+    --project|--env-file|--compose-file)
+      if (( $# < 2 )) || [[ -z $2 ]]; then
+        echo "$1 needs a value" >&2; usage >&2; exit 2
+      fi
+      case "$1" in
+        --project) compose_project="$2" ;;
+        --env-file) env_file_arg="$2" ;;
+        --compose-file) compose_file_arg="$2" ;;
+      esac
+      shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; exit 2 ;;
   esac
@@ -49,9 +76,15 @@ done
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd -- "$repo_root"
 
-compose_file="$repo_root/deploy/compose.yml"
-env_file="$repo_root/deploy/.env"
-compose=(docker compose -f "$compose_file" --env-file "$env_file")
+resolve_path() {
+  case "$1" in
+    /*) printf '%s' "$1" ;;
+    *) printf '%s/%s' "$repo_root" "$1" ;;
+  esac
+}
+compose_file="$(resolve_path "$compose_file_arg")"
+env_file="$(resolve_path "$env_file_arg")"
+compose=(docker compose -f "$compose_file" --env-file "$env_file" -p "$compose_project")
 step="preflight"
 
 prev_images=""
@@ -75,7 +108,7 @@ if [[ ! -f $compose_file ]]; then
   exit 3
 fi
 if [[ ! -f $env_file ]]; then
-  echo "missing $env_file (copy deploy/.env.example and fill it in)" >&2
+  echo "missing $env_file (copy the matching *.example file and fill it in)" >&2
   exit 3
 fi
 env_mode="$(stat -c %a -- "$env_file")"
@@ -90,7 +123,7 @@ docker info >/dev/null 2>&1 || { echo "cannot reach the Docker daemon without su
 
 # Only one deploy at a time; a second one would migrate against half-updated
 # containers. The lock lives outside the checkout so it never becomes a commit.
-lock_file="${TMPDIR:-/tmp}/tasklutein-deploy.lock"
+lock_file="${TMPDIR:-/tmp}/tasklutein-deploy-$compose_project.lock"
 exec 9>"$lock_file"
 if ! flock -n 9; then
   echo "another deploy holds $lock_file" >&2
@@ -108,7 +141,7 @@ if [[ $allow_dirty -eq 0 ]]; then
 fi
 branch="$(git -C "$repo_root" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
 if [[ $branch != main ]]; then
-  echo "note: deploying branch '$branch', not 'main'" >&2
+  echo "note: deploying branch '$branch' of project '$compose_project', not 'main'" >&2
 fi
 
 running_image() {
@@ -137,9 +170,13 @@ if [[ $db_ready -eq 0 ]]; then
 fi
 
 step="backup"
-# Detect the existing production database by compose labels rather than by a
-# compose flag, so an unknown `ps` option can never silently skip the backup.
-if docker ps --filter 'label=com.docker.compose.project=deploy' \
+# Only Production is snapshotted: the backup script is pinned to the deploy/db
+# container and writes into the Production backup directory. Other projects own
+# separate volumes and are deliberately outside that retention policy.
+# The container label is re-checked rather than trusted from the compose flag,
+# so an unknown project can never silently skip a Production backup.
+if [[ $compose_project == deploy ]] &&
+   docker ps --filter 'label=com.docker.compose.project=deploy' \
      --filter 'label=com.docker.compose.service=db' \
      --format '{{.Names}}' | grep -q .; then
   # The backup script verifies the compose project label itself and refuses to
@@ -192,7 +229,7 @@ while (( SECONDS < delay )); do
 done
 if [[ $healthy -eq 0 ]]; then
   echo "api did not answer http://$addr/api/health within 90s" >&2
-  echo "a 403 here means EDGE_GATEWAY_TOKEN in deploy/.env does not match the injected header" >&2
+  echo "a 403 here means EDGE_GATEWAY_TOKEN in $env_file does not match the injected header" >&2
   "${compose[@]}" ps >&2
   exit 8
 fi
