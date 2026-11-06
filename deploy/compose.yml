@@ -29,6 +29,8 @@ services:
   api:
     build:
       context: ../apps/api
+      args:
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-}
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+psycopg://tasklutein:${POSTGRES_PASSWORD}@db:5432/tasklutein
@@ -45,6 +47,8 @@ services:
     build:
       context: ..
       dockerfile: apps/mcp/Dockerfile
+      args:
+        NPM_CONFIG_REGISTRY: ${NPM_CONFIG_REGISTRY:-}
     restart: unless-stopped
     environment:
       MCP_API_BASE: http://api:8000

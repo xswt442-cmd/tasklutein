@@ -11,6 +11,7 @@ This file records shipped features, fixes, compatibility changes, and upgrade re
 **改进**
 - 新增 `scripts/deploy-backend.sh`，在服务器上按 `db → 备份 → 迁移 → 替换 api/mcp → 健康检查` 的顺序完成后端发布，失败时输出当前步骤和上一版镜像 ID；Compose 中为 API、MCP 和 Tunnel 容器设置日志轮转上限。
 - 新增 `scripts/preview-autodeploy.sh`，由宿主机 systemd timer 跟随 `dev` 自动发布 Preview 后端：仅在提交变化时部署，失败的提交不会重复构建，成功后清理未标记镜像；`scripts/deploy-backend.sh` 支持 `--project`、`--env-file` 和 `--compose-file`，且只有 Production 会在迁移前备份。
+- 镜像构建支持 `PIP_INDEX_URL` 和 `NPM_CONFIG_REGISTRY` 构建参数，网络受限的宿主机可改用其他包索引；留空时行为不变。
 
 **安全**
 - 将 `body-parser`、`fast-uri` 和 `qs` 更新至已修复版本，修复压缩请求解析拒绝服务、URI scheme 编码歧义和逗号数组序列化异常；同步更新受影响的 Wrangler、Miniflare、Vitest 和 Undici 开发工具依赖。
@@ -20,6 +21,7 @@ This file records shipped features, fixes, compatibility changes, and upgrade re
 **Improvements**
 - Add `scripts/deploy-backend.sh` to release the backend on the server in the order `db → backup → migrations → replace api/mcp → health check`, reporting the current step and the previous image ID on failure; cap log size for the API, MCP, and Tunnel containers in Compose.
 - Add `scripts/preview-autodeploy.sh` to release the Preview backend from a host systemd timer that follows `dev`: it deploys only when the commit changes, does not rebuild a failed commit, and prunes untagged images after success; `scripts/deploy-backend.sh` accepts `--project`, `--env-file`, and `--compose-file`, and only Production is backed up before migrating.
+- Image builds accept `PIP_INDEX_URL` and `NPM_CONFIG_REGISTRY` build args so a host with a restricted network can use another package index; leaving them empty keeps the previous behavior.
 
 **Security**
 - Update `body-parser`, `fast-uri`, and `qs` to patched versions, addressing compressed-request parsing DoS, URI scheme decoding ambiguity, and comma-array serialization exceptions; update the affected Wrangler, Miniflare, Vitest, and Undici development-tool dependencies.

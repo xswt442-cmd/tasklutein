@@ -100,6 +100,7 @@ docker compose -f deploy/compose.yml --env-file deploy/.env up -d --no-deps api 
 - `dev` 对应开发和 Preview，`main` 对应发布源码。跨环境数据、Token、Worker 回源和 Tunnel 配置必须相互隔离。
 - `scripts/deploy-backend.sh` 在目标服务器上按 `db → 备份 → 迁移 → 替换 api/mcp → 健康检查` 的顺序发布本地 checkout 的后端。它默认部署 `deploy` 项目；同机其他栈用 `--project`、`--env-file`、`--compose-file` 指定，且只有 `deploy` 会在迁移前备份。它拒绝 root/sudo、脏 checkout（`--allow-dirty` 例外）和组或其他用户可读的 env 文件，并用按项目命名的文件锁避免并发发布；迁移先于替换容器执行且失败时不回退 Schema。全新数据卷仍需先手工执行 `alembic stamp 0001_baseline`，脚本不会替用户猜测基线。
 - `scripts/preview-autodeploy.sh` 由宿主机的 systemd timer 周期性执行并跟随 `dev`：拉取远端分支，仅当提交变化时把受管 checkout 重置到该提交，再以 `--project tasklutein-preview --env-file deploy/.env.preview` 调用 `scripts/deploy-backend.sh`，成功后清理未标记镜像。它不需要任何 Secret、入站端口或仓库凭据；失败的提交会被记住，分支不动时不再重复构建。该 checkout 中的本地改动会被丢弃，`deploy/.env.preview` 等被忽略的文件保留。
+- 构建镜像时可用 `PIP_INDEX_URL` 和 `NPM_CONFIG_REGISTRY` 指定包索引，二者经 Compose build args 传入，默认留空即使用 PyPI 与 npm 官方源；这些值只影响构建过程，不写入镜像的运行配置。
 - `scripts/production-backup.sh` 创建逻辑备份；`scripts/production-restore-check.sh` 在隔离的临时 PostgreSQL 实例中验证恢复。两者在目标服务器的受控 Docker 账户中执行，不能用本地 Docker 假装生产恢复已完成。异机备份、保留期限和周期性演练应由运行环境单独管理。
 - Cloudflare Worker 使用 `wrangler.jsonc` 的 `keep_vars` 保留运行时绑定；Production 发布工作流按当前 Cloudflare 配置核验网关密钥类型和公开 HTTP 边界。
 - API、MCP、PostgreSQL 的版本、健康、Schema 和备份需分别核对，避免将 GitHub Release 或静态页面 200 误判为整个平台完成部署。
