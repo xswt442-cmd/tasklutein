@@ -37,6 +37,8 @@ jobs:
         run: npm run check
       - name: Check non-destructive PostgreSQL maintenance scripts syntax
         run: bash -n scripts/production-backup.sh scripts/production-restore-check.sh
+      - name: Check backend deploy script syntax
+        run: bash -n scripts/deploy-backend.sh
 
   fastapi:
     name: fastapi tests and lint

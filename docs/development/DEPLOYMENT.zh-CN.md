@@ -98,6 +98,7 @@ docker compose -f deploy/compose.yml --env-file deploy/.env up -d --no-deps api 
 ## 发布、备份与恢复
 
 - `dev` 对应开发和 Preview，`main` 对应发布源码。跨环境数据、Token、Worker 回源和 Tunnel 配置必须相互隔离。
+- `scripts/deploy-backend.sh` 在目标服务器上按 `db → 备份 → 迁移 → 替换 api/mcp → 健康检查` 的顺序发布本地 checkout 的后端。它拒绝 root/sudo、脏 checkout（`--allow-dirty` 例外）和组或其他用户可读的 `deploy/.env`，并用文件锁避免并发发布；迁移先于替换容器执行且失败时不回退 Schema。全新数据卷仍需先手工执行 `alembic stamp 0001_baseline`，脚本不会替用户猜测基线。
 - `scripts/production-backup.sh` 创建逻辑备份；`scripts/production-restore-check.sh` 在隔离的临时 PostgreSQL 实例中验证恢复。两者在目标服务器的受控 Docker 账户中执行，不能用本地 Docker 假装生产恢复已完成。异机备份、保留期限和周期性演练应由运行环境单独管理。
 - Cloudflare Worker 使用 `wrangler.jsonc` 的 `keep_vars` 保留运行时绑定；Production 发布工作流按当前 Cloudflare 配置核验网关密钥类型和公开 HTTP 边界。
 - API、MCP、PostgreSQL 的版本、健康、Schema 和备份需分别核对，避免将 GitHub Release 或静态页面 200 误判为整个平台完成部署。

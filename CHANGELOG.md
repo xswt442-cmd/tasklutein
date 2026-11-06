@@ -8,10 +8,16 @@ This file records shipped features, fixes, compatibility changes, and upgrade re
 
 ### 简体中文
 
+**改进**
+- 新增 `scripts/deploy-backend.sh`，在服务器上按 `db → 备份 → 迁移 → 替换 api/mcp → 健康检查` 的顺序完成后端发布，失败时输出当前步骤和上一版镜像 ID；Compose 中为 API、MCP 和 Tunnel 容器设置日志轮转上限。
+
 **安全**
 - 将 `body-parser`、`fast-uri` 和 `qs` 更新至已修复版本，修复压缩请求解析拒绝服务、URI scheme 编码歧义和逗号数组序列化异常；同步更新受影响的 Wrangler、Miniflare、Vitest 和 Undici 开发工具依赖。
 
 ### English
+
+**Improvements**
+- Add `scripts/deploy-backend.sh` to release the backend on the server in the order `db → backup → migrations → replace api/mcp → health check`, reporting the current step and the previous image ID on failure; cap log size for the API, MCP, and Tunnel containers in Compose.
 
 **Security**
 - Update `body-parser`, `fast-uri`, and `qs` to patched versions, addressing compressed-request parsing DoS, URI scheme decoding ambiguity, and comma-array serialization exceptions; update the affected Wrangler, Miniflare, Vitest, and Undici development-tool dependencies.

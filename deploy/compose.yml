@@ -1,5 +1,12 @@
 # All app ports are host-loopback only. The optional tunnel enters Caddy.
 # Cloudflare Worker injects a private gateway secret; API/MCP validate it.
+# Bound container logs so a chatty service cannot fill the small host disk.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   db:
     image: postgres:17-alpine
@@ -29,6 +36,7 @@ services:
       WEB_ORIGINS: ${WEB_ORIGINS:-http://localhost:5173}
     ports:
       - "127.0.0.1:${API_HOST_PORT:-8000}:8000"
+    logging: *default-logging
     depends_on:
       db:
         condition: service_healthy
@@ -43,6 +51,7 @@ services:
       MCP_PORT: 3000
       EDGE_GATEWAY_TOKEN: ${EDGE_GATEWAY_TOKEN:?set EDGE_GATEWAY_TOKEN}
       MCP_ALLOWED_ORIGINS: ${MCP_ALLOWED_ORIGINS:-}
+    logging: *default-logging
     depends_on:
       - api
 
@@ -64,6 +73,7 @@ services:
     restart: unless-stopped
     profiles: ["tunnel"]
     command: tunnel --no-autoupdate run
+    logging: *default-logging
     environment:
       TUNNEL_TOKEN: ${CF_TUNNEL_TOKEN:-}
     depends_on:
