@@ -170,10 +170,21 @@ if [[ -z $addr ]]; then
   echo "the api service publishes no loopback port; cannot verify health" >&2
   exit 8
 fi
+# The API rejects every /api/* request that lacks the Worker's private gateway
+# header, so a bare loopback probe gets a 403 even when the container is healthy.
+# Present the same secret the Worker injects; only skip it when the stack itself
+# has no EDGE_GATEWAY_TOKEN configured (local development).
+gateway_token="$(sed -n 's/^EDGE_GATEWAY_TOKEN=//p' "$env_file" | tail -n1)"
+gateway_token="${gateway_token%\"}"
+gateway_token="${gateway_token#\"}"
+probe=(-fsS --max-time 3)
+if [[ -n $gateway_token ]]; then
+  probe+=(-H "X-Tasklutein-Gateway: $gateway_token")
+fi
 delay=$((SECONDS + 90))
 healthy=0
 while (( SECONDS < delay )); do
-  if curl -fsS --max-time 3 "http://$addr/api/health" >/dev/null 2>&1; then
+  if curl "${probe[@]}" "http://$addr/api/health" >/dev/null 2>&1; then
     healthy=1
     break
   fi
@@ -181,6 +192,7 @@ while (( SECONDS < delay )); do
 done
 if [[ $healthy -eq 0 ]]; then
   echo "api did not answer http://$addr/api/health within 90s" >&2
+  echo "a 403 here means EDGE_GATEWAY_TOKEN in deploy/.env does not match the injected header" >&2
   "${compose[@]}" ps >&2
   exit 8
 fi
